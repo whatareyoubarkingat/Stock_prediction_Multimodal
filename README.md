@@ -43,3 +43,4 @@ export NEWSAPI_API_KEY="你的 key"
 ```bash
 streamlit run app_stock_1.py
 ```
+### 备注：由于防火墙的原因，需要自己上传CSV（主包给出了一个python获取CSV的代码，请自行安装相关依赖）
