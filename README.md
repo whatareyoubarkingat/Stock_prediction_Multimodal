@@ -36,11 +36,13 @@ pip install torch sentence-transformers tqdm
 export NEWSAPI_API_KEY="你的 key"
 ```
 
-### 2. 后端rag_engine_stock_1.py，并且，再次基础上，加上一个stock_engine_hybrid.py
+## 2. 后端rag_engine_stock_1.py，并且，再次基础上，加上一个stock_engine_hybrid.py
 
-### 3. 前端app_stock_1.py
+## 3. 前端app_stock_1.py
 在Ubuntu中，激活rag310，用如下命令运行：
 ```bash
 streamlit run app_stock_1.py
 ```
-### 备注：由于防火墙的原因，需要自己上传CSV（主包给出了一个python获取CSV的代码，请自行安装相关依赖）
+# 备注：
+## 1. 由于防火墙的原因，需要自己上传CSV（主包给出了一个python获取CSV的代码(getCSV.py)，请自行安装相关依赖）
+## 2. 建议在WSL中跑，以用上GPU加速；GPU加速需要CUDA，记得安装
