@@ -46,4 +46,5 @@ streamlit run app_stock_1.py
 # 备注：
 ## 1. 由于防火墙的原因，需要自己上传CSV（主包给出了一个python获取CSV的代码(getCSV.py)，请自行安装相关依赖）
 ## 2. 建议在WSL中跑，以用上GPU加速；GPU加速需要CUDA，记得安装
-## 3. <span style="color:red">其实现在加上新闻之后，得到的预测图线非常的奇怪，主包还在修改中……</span>
+
+**<span style="color:red">其实现在加上新闻之后，得到的预测图线非常的奇怪，主包还在修改中……</span>**
