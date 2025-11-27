@@ -1,0 +1,10 @@
+streamlit
+plotly
+pandas
+numpy
+scikit-learn        # 用于随机森林
+sentence-transformers
+torch               # 如果你想跑 GRU 模型
+tqdm
+openpyxl            # 用于读取 Excel
+requests            # 新闻 API
