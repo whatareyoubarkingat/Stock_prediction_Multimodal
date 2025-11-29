@@ -207,14 +207,23 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     # 技术指标
     x["ret_1"] = x["close"].pct_change()
 
+    # 多窗口移动平均、波动率、成交量均值
     for w in (3, 5, 10, 20):
         x[f"ma_{w}"] = x["close"].rolling(w).mean()
         x[f"ret_std_{w}"] = x["ret_1"].rolling(w).std()
         x[f"vol_ma_{w}"] = x["volume"].rolling(w).mean()
 
-    x["close_over_ma20"] = x["close"] / (x["ma_20"] + 1e-8)
+    # 收盘价相对 MA20 的比值
+    # 这里强制保证是“一维 Series”，避免被 pandas 当成 DataFrame
+    ma20 = x["ma_20"].astype(float)
+    close = x["close"].astype(float)
+    ratio = close / (ma20 + 1e-8)
+
+    # 强制塞一条一维序列进去
+    x["close_over_ma20"] = pd.Series(np.asarray(ratio, dtype=float), index=x.index)
 
     return x
+
 
 # ============================================================
 # 随机森林模型：仅基于价格特征
