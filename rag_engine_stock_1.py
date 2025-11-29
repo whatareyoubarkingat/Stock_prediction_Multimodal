@@ -178,6 +178,10 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     这里 **不再调用 pd.to_numeric**，避免 TypeError；
     对于 yfinance 下载的数据，本身就是 float，直接用即可。
     """
+
+     # 🔥 DEBUG：如果 Cloud 真跑的是这一份文件，会在这里直接报错
+    raise RuntimeError("DEBUG: make_features from NEW rag_engine_stock_1.py is running")
+
     if df is None or df.empty:
         raise ValueError("输入 df 为空。")
 
