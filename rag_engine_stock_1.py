@@ -1,8 +1,7 @@
 # rag_engine_stock_1.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Tuple, Optional, List
-
+from typing import Optional, List
 from datetime import datetime
 import os
 
@@ -10,6 +9,12 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 import requests
+
+# 可选导入 streamlit，用于在 Cloud 上读取 st.secrets
+try:
+    import streamlit as st  # type: ignore
+except Exception:
+    st = None  # type: ignore
 
 
 # ============================================================
@@ -35,20 +40,30 @@ class NewsItem:
 
 def _get_news_api_key() -> str:
     """
-    从环境变量获取 NewsAPI 的 key。
-    在本地或 Streamlit Cloud 的 Secrets 中设置：
-        NEWS_API_KEY=xxxx
+    先从 Streamlit Cloud 的 secrets 里拿 NEWS_API_KEY，
+    如果没有，再退回到环境变量。
     """
-    api_key = (
-        os.getenv("NEWS_API_KEY")
-        or os.getenv("NEWSAPI_KEY")
-        or os.getenv("NEWS_API_TOKEN")
+    # 1) 先看 st.secrets
+    if st is not None:
+        for key in ("NEWS_API_KEY", "NEWSAPI_KEY", "NEWS_API_TOKEN"):
+            try:
+                if key in st.secrets:
+                    return str(st.secrets[key])
+            except Exception:
+                # 本地没有 st.secrets 之类的情况直接忽略
+                pass
+
+    # 2) 再看环境变量
+    for key in ("NEWS_API_KEY", "NEWSAPI_KEY", "NEWS_API_TOKEN"):
+        val = os.getenv(key)
+        if val:
+            return val
+
+    # 3) 都没有就抛错（外层会 catch，不会让整个 app 崩掉）
+    raise RuntimeError(
+        "未找到 NewsAPI API Key，请在环境变量或 Streamlit secrets 中设置 "
+        "NEWS_API_KEY / NEWSAPI_KEY / NEWS_API_TOKEN。"
     )
-    if not api_key:
-        raise RuntimeError(
-            "未找到 NewsAPI API Key，请在环境变量中设置 NEWS_API_KEY 或 NEWSAPI_KEY。"
-        )
-    return api_key
 
 
 def search_stock_news(query: str, max_results: int = 10) -> List[NewsItem]:
@@ -63,7 +78,7 @@ def search_stock_news(query: str, max_results: int = 10) -> List[NewsItem]:
 
     params = {
         "q": query,
-        "language": "zh",   # 主要中文新闻；如果搜不到，可以改为 "en" 或去掉
+        "language": "zh",      # 主要中文新闻；必要时改成 "en" 或去掉
         "sortBy": "publishedAt",
         "pageSize": max_results,
         "apiKey": api_key,
@@ -73,19 +88,22 @@ def search_stock_news(query: str, max_results: int = 10) -> List[NewsItem]:
     resp.raise_for_status()
     data = resp.json()
 
-    articles = data.get("articles", [])
+    articles = data.get("articles", []) or []
     items: List[NewsItem] = []
 
     for art in articles:
         title = art.get("title") or ""
         if not title:
             continue
+
         description = art.get("description")
         url_ = art.get("url") or ""
         source_name = (art.get("source") or {}).get("name") or ""
         published_at_str = art.get("publishedAt") or ""
         try:
-            published_at = datetime.fromisoformat(published_at_str.replace("Z", "+00:00"))
+            published_at = datetime.fromisoformat(
+                published_at_str.replace("Z", "+00:00")
+            )
         except Exception:
             published_at = datetime.utcnow()
 
@@ -112,14 +130,18 @@ def load_ohlcv(csv_path: str) -> pd.DataFrame:
     """
     从本地 CSV 加载 OHLCV，确保有：
         date, open, high, low, close, volume
-    现在你主流程用的是 yfinance，这个函数主要是为了兼容已有代码。
+    现在主流程用的是 yfinance，这个函数主要是为了兼容“上传 CSV”的老逻辑。
     """
     df = pd.read_csv(csv_path)
+
+    # 处理 date
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
     else:
+        # 如果没有 date，就用第一列当作日期
         df.insert(0, "date", pd.to_datetime(df.iloc[:, 0]))
 
+    # 兼容 yfinance 默认列名
     rename_map = {
         "Open": "open",
         "High": "high",
@@ -130,6 +152,7 @@ def load_ohlcv(csv_path: str) -> pd.DataFrame:
     }
     df = df.rename(columns=rename_map)
 
+    # 如果没有 close，就用 adj_close 顶上
     if "close" not in df.columns and "adj_close" in df.columns:
         df["close"] = df["adj_close"]
 
@@ -152,18 +175,19 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
         - close       （作为目标）
         - 其他若干数值型特征列
 
-    这里**不会**对整个 DataFrame 直接调用 to_numeric，而是逐列处理，
-    避免出现 “arg must be a list, tuple, 1-d array, or Series” 的错误。
+    这里 **不再调用 pd.to_numeric**，避免 TypeError；
+    对于 yfinance 下载的数据，本身就是 float，直接用即可。
     """
     if df is None or df.empty:
         raise ValueError("输入 df 为空。")
 
-    # 确保是 DataFrame（防御式）
+    # 防御：确保是 DataFrame
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
 
     x = df.copy()
 
+    # 兼容 yfinance / CSV 的列名
     rename_map = {
         "Open": "open",
         "High": "high",
@@ -174,35 +198,34 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     }
     x = x.rename(columns=rename_map)
 
+    # 处理 date
     if "date" in x.columns:
         x["date"] = pd.to_datetime(x["date"])
         x = x.sort_values("date").reset_index(drop=True)
 
+    # 必要列检查
     missing = [c for c in REQUIRED_COLS if c not in x.columns]
     if missing:
         raise ValueError(f"make_features: 缺少必要列: {missing}")
 
-    # 逐列做 to_numeric（这一段就是修掉你现在这个 TypeError 的关键）
-    numeric_cols = ["open", "high", "low", "close", "volume"]
-    for c in numeric_cols:
-        x[c] = pd.to_numeric(x[c], errors="coerce")
-
+    # ====== 简单技术指标示例 ======
     # 1 日收益率
     x["ret_1"] = x["close"].pct_change()
 
-    # 若干窗口的均线和波动率
+    # 多窗口移动平均、波动率、成交量均值
     for w in (3, 5, 10, 20):
         x[f"ma_{w}"] = x["close"].rolling(w).mean()
         x[f"ret_std_{w}"] = x["ret_1"].rolling(w).std()
         x[f"vol_ma_{w}"] = x["volume"].rolling(w).mean()
 
+    # 收盘价相对 MA20 的比值
     x["close_over_ma20"] = x["close"] / (x["ma_20"] + 1e-8)
 
     return x
 
 
 # ============================================================
-# 随机森林模型：仅基价特征
+# 随机森林模型：仅基于价格特征
 # ============================================================
 
 @dataclass
@@ -230,6 +253,8 @@ class StockForecaster:
         self.min_train_size = min_train_size
         self.fitted = False
 
+    # ------------------------------------------------------------
+
     def fit(self, df: pd.DataFrame) -> float:
         """
         用历史数据训练随机森林，并返回一个简单的 Test MAPE 作为参考。
@@ -244,8 +269,10 @@ class StockForecaster:
         X = feat.drop(columns=["date", "close"]).values
         y = feat["close"].values
 
+        # 简单划分：前 80% 训练，后 20% 测试
         split_idx = int(len(feat) * 0.8)
         if split_idx <= 0 or split_idx >= len(feat):
+            # 极端情况：直接全量训练，不算 MAPE
             self.model.fit(X, y)
             self.fitted = True
             return float("nan")
@@ -261,6 +288,8 @@ class StockForecaster:
         mape = float(np.mean(np.abs((y_test - y_pred) / (y_test + eps))) * 100.0)
         return mape
 
+    # ------------------------------------------------------------
+
     def predict_future(
         self,
         df: pd.DataFrame,
@@ -274,6 +303,7 @@ class StockForecaster:
         else:
             mape = float("nan")
 
+        # 用一份可变副本递推未来数据
         hist = df.copy()
         if "date" not in hist.columns:
             raise ValueError("predict_future: df 中缺少 'date' 列。")
@@ -296,19 +326,21 @@ class StockForecaster:
 
             next_close = float(self.model.predict(X_last)[0])
 
+            # 这里简单地 +1 天；实际项目可以改成“只加交易日”的逻辑
             next_date = last_date + pd.Timedelta(days=1)
             last_date = next_date
 
             preds.append(next_close)
             dates.append(next_date)
 
+            # 为了递归预测，构造“下一天的伪数据”
             new_row = {
                 "date": next_date,
                 "open": next_close,
                 "high": next_close,
                 "low": next_close,
                 "close": next_close,
-                "volume": hist["volume"].iloc[-1],
+                "volume": hist["volume"].iloc[-1],  # 沿用上一日成交量
             }
             hist = pd.concat([hist, pd.DataFrame([new_row])], ignore_index=True)
 
