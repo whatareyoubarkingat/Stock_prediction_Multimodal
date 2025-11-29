@@ -216,13 +216,20 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     ma20 = x["ma_20"].astype(float)
     close = x["close"].astype(float)
 
-    # 先算比值
+    # 原始比值
     ratio = close / (ma20 + 1e-8)
 
-    # 🔥 强制把数据压成 1 维数组（不管原来是 Series 还是 DataFrame）
+    # 强制转成 1D
     ratio_1d = np.asarray(ratio, dtype=float).reshape(-1)
 
-    # 直接赋值给新列即可，pandas 会自己生成 Series
+    # 🔥 强制对齐长度：补齐 / 截断，让结果长度与 x 完全一致
+    if len(ratio_1d) != len(x):
+        fixed = np.full(len(x), np.nan, dtype=float)
+        L = min(len(ratio_1d), len(fixed))
+        fixed[:L] = ratio_1d[:L]
+        ratio_1d = fixed  # 覆盖为修复后的版本
+
+    # 写入列
     x["close_over_ma20"] = ratio_1d
 
     return x
