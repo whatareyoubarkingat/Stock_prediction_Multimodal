@@ -169,29 +169,16 @@ def load_ohlcv(csv_path: str) -> pd.DataFrame:
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     输入原始 OHLCV，输出包含各种技术指标的特征 DataFrame。
-
-    返回的 DataFrame 至少包含：
-        - date
-        - close       （作为目标）
-        - 其他若干数值型特征列
-
-    这里 **不再调用 pd.to_numeric**，避免 TypeError；
-    对于 yfinance 下载的数据，本身就是 float，直接用即可。
     """
-
-     # 🔥 DEBUG：如果 Cloud 真跑的是这一份文件，会在这里直接报错
-    raise RuntimeError("DEBUG: make_features from NEW rag_engine_stock_1.py is running")
-
     if df is None or df.empty:
         raise ValueError("输入 df 为空。")
 
-    # 防御：确保是 DataFrame
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
 
     x = df.copy()
 
-    # 兼容 yfinance / CSV 的列名
+    # 统一列名
     rename_map = {
         "Open": "open",
         "High": "high",
@@ -202,7 +189,7 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     }
     x = x.rename(columns=rename_map)
 
-    # 处理 date
+    # 日期处理
     if "date" in x.columns:
         x["date"] = pd.to_datetime(x["date"])
         x = x.sort_values("date").reset_index(drop=True)
@@ -212,21 +199,22 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"make_features: 缺少必要列: {missing}")
 
-    # ====== 简单技术指标示例 ======
-    # 1 日收益率
+    # ⭐⭐ 核心修复：避免任何情况 fallback 到 pandas 的 to_numeric ⭐⭐
+    num_cols = ["open", "high", "low", "close", "volume"]
+    for c in num_cols:
+        x[c] = x[c].astype(float)
+
+    # 技术指标
     x["ret_1"] = x["close"].pct_change()
 
-    # 多窗口移动平均、波动率、成交量均值
     for w in (3, 5, 10, 20):
         x[f"ma_{w}"] = x["close"].rolling(w).mean()
         x[f"ret_std_{w}"] = x["ret_1"].rolling(w).std()
         x[f"vol_ma_{w}"] = x["volume"].rolling(w).mean()
 
-    # 收盘价相对 MA20 的比值
     x["close_over_ma20"] = x["close"] / (x["ma_20"] + 1e-8)
 
     return x
-
 
 # ============================================================
 # 随机森林模型：仅基于价格特征
