@@ -2,10 +2,10 @@ streamlit
 plotly
 pandas
 numpy
-scikit-learn
+scikit-learn        # 用于随机森林
 sentence-transformers
-torch
+torch               # 如果你想跑 GRU 模型
 tqdm
-openpyxl
-requests
-akshare
+openpyxl            # 用于读取 Excel
+requests            # 新闻 API
+yfinance
