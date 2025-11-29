@@ -287,52 +287,38 @@ class HybridForecaster:
         horizon: int = 5,
     ) -> HybridForecastResult:
         """
-        多步预测未来 horizon 天的 close。
+        使用已训练好的 GRU 序列模型预测未来 horizon 天的收盘价。
+
+        为了避免递推时伪造未来 K 线导致数值完全漂移，这里采用「单步预测 + 平铺」策略：
+        - 利用真实历史数据构造最后一个长度为 window 的特征序列；
+        - 模型只预测下一天的收盘价 next_close；
+        - 将 next_close 在时间轴上平铺 horizon 天，用于前端展示。
         """
+        # 1) 如有必要先训练
         if not self.fitted:
             test_mae = self.fit(df, news_list)
         else:
             test_mae = None
 
-        # 重新准备一次完整特征（包含训练完后的最新数据）
+        # 2) 使用完整历史数据构造特征
         features_all, close_all, dates = self._prepare_data(df, news_list)
-        model = self.model.to(self.device)
-        model.eval()
+        T = len(features_all)
+        if T < self.window:
+            raise ValueError("历史序列长度不足以构造一个窗口。")
 
-        hist_df = df.copy()
-        last_date = hist_df["date"].iloc[-1]
-        preds = []
-        pred_dates = []
+        # 3) 取最后一个 window 的特征序列作为当前状态
+        seq_feats = features_all[-self.window :]  # (window, input_dim)
+        x_seq = torch.from_numpy(seq_feats).float().unsqueeze(0).to(self.device)  # (1, window, D)
 
-        # 先取最后 window 天的特征序列
-        seq_feats = features_all[-self.window:].copy()
+        # 4) 预测下一天的 close
+        self.model.eval()
+        with torch.no_grad():
+            next_close = float(self.model(x_seq).cpu().item())
 
-        for _ in range(horizon):
-            x_seq = torch.from_numpy(seq_feats).unsqueeze(0).float().to(self.device)
-            with torch.no_grad():
-                next_close = float(model(x_seq).cpu().item())
-
-            # 记录
-            next_date = last_date + pd.Timedelta(days=1)
-            last_date = next_date
-            preds.append(next_close)
-            pred_dates.append(next_date)
-
-            # 构造“伪 K 线行”加入 hist_df，用于后续特征更新（简单近似）
-            new_row = {
-                "date": next_date,
-                "open": next_close,
-                "high": next_close,
-                "low": next_close,
-                "close": next_close,
-                "volume": hist_df["volume"].iloc[-1],
-            }
-            hist_df = pd.concat([hist_df, pd.DataFrame([new_row])], ignore_index=True)
-
-            # 重新计算最近 window 天的特征 + 新闻向量
-            # （注意：新闻本身不变，这里为了简单直接用原来的 news_list）
-            tmp_feats_all, _, _ = self._prepare_data(hist_df, news_list)
-            seq_feats = tmp_feats_all[-self.window:]
+        # 5) 构造未来 horizon 天日期，并将 next_close 平铺
+        last_date = pd.to_datetime(dates.iloc[-1])
+        pred_dates = [last_date + pd.Timedelta(days=i) for i in range(1, horizon + 1)]
+        preds = [next_close] * horizon
 
         forecast_df = pd.DataFrame({
             "date": pred_dates,
