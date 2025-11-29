@@ -317,42 +317,60 @@ class StockForecaster:
         return mape
 
     # ------------------------------------------------------------
-    def predict_future(
+        def predict_future(
         self,
         df: pd.DataFrame,
         horizon: int = 5,
     ) -> ForecastResult:
         """
-        递归方式预测未来 horizon 天的 close，并返回 ForecastResult。
-        如果历史数据太短导致无法训练，则退化成“用最后一天价格横着拉”的朴素预测。
+        使用随机森林 **只预测下一天的收盘价**。
+
+        为了兼容前端的 horizon 参数：
+        - 实际只用模型预测 T+1
+        - 然后把这个 T+1 的预测值在时间轴上平铺 horizon 天
+          （这样前端还是能画出一段“未来曲线”，但不会因为递推发散得离谱）
         """
-        # 如果还没训练，先尝试训练
+        # 1. 如果还没训练，先训练一次
         if not self.fitted:
             mape = self.fit(df)
         else:
             mape = float("nan")
 
-        # 如果仍然没法训练（比如样本太少），用朴素预测兜底
-        if not self.fitted:
-            if "date" not in df.columns or "close" not in df.columns:
-                # 连兜底都做不了，只能给空结果
-                return ForecastResult(
-                    forecast_df=pd.DataFrame(columns=["date", "pred_close"]),
-                    test_mape=mape,
-                )
+        # 2. 基本检查
+        if "date" not in df.columns or "close" not in df.columns:
+            raise ValueError("predict_future: df 中缺少 'date' 或 'close' 列。")
 
-            last_date = pd.to_datetime(df["date"]).max()
-            last_close = float(df["close"].iloc[-1])
+        hist = df.copy()
+        hist["date"] = pd.to_datetime(hist["date"])
+        hist = hist.sort_values("date").reset_index(drop=True)
 
-            dates = []
-            preds = []
-            for _ in range(horizon):
-                last_date = last_date + pd.Timedelta(days=1)
-                dates.append(last_date)
-                preds.append(last_close)  # 直接用最后一天价格平移
+        # 3. 用全部历史数据做一次特征，取最后一行作为“当前状态”
+        feat_all = make_features(hist).dropna().reset_index(drop=True)
+        if feat_all.empty:
+            # 没有任何特征，返回空结果
+            return ForecastResult(
+                forecast_df=pd.DataFrame(columns=["date", "pred_close"]),
+                test_mape=mape,
+            )
 
-            forecast_df = pd.DataFrame({"date": dates, "pred_close": preds})
-            return ForecastResult(forecast_df=forecast_df, test_mape=mape)
+        last_row = feat_all.iloc[-1]
+        X_last = last_row.drop(labels=["date", "close"]).values.reshape(1, -1)
+
+        # 4. 预测下一天的 close（T+1）
+        next_close = float(self.model.predict(X_last)[0])
+
+        # 5. 构造未来 horizon 天的日期，并用同一个预测值平铺
+        last_date = hist["date"].max()
+        dates = []
+        preds = []
+
+        for i in range(1, horizon + 1):
+            next_date = last_date + pd.Timedelta(days=i)
+            dates.append(next_date)
+            preds.append(next_close)
+
+        forecast_df = pd.DataFrame({"date": dates, "pred_close": preds})
+        return ForecastResult(forecast_df=forecast_df, test_mape=mape)
 
         # -------- 正常训练成功的情况 --------
         hist = df.copy()
