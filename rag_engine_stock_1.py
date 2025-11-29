@@ -3,193 +3,211 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple, Optional, List
 
-import os
 from datetime import datetime
+import os
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-import requests   # 新增：用于调第三方新闻 API
+import requests
 
-# ====== 新增：AkShare 抓取 A 股数据 ======
-try:
-    import akshare as ak
-except ImportError:
-    ak = None
-
+# ============================================================
+# 基本配置
+# ============================================================
 
 REQUIRED_COLS = ["date", "open", "high", "low", "close", "volume"]
 
 
-def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # 统一列名为小写，去空格
-    df = df.copy()
-    df.columns = [c.strip().lower() for c in df.columns]
-    # 常见别名兼容
-    rename_map = {
-        "datetime": "date",
-        "time": "date",
-        "adj close": "close",
-        "adj_close": "close",
-        "vol": "volume",
-    }
-    df = df.rename(columns=rename_map)
-    return df
+# ============================================================
+# 新闻相关的数据结构 & 工具
+# ============================================================
+
+@dataclass
+class NewsItem:
+    title: str
+    description: Optional[str]
+    url: str
+    source: str
+    published_at: datetime
+    content: Optional[str] = None
 
 
-def load_ohlcv(file) -> pd.DataFrame:
+def _get_news_api_key() -> str:
     """
-    支持 CSV / XLSX.
-    需要包含 Date/Open/High/Low/Close/Volume.
+    从环境变量中获取 NewsAPI 的 key。
+    你可以在 Streamlit Cloud 的 Secrets 或本地环境里设置：
+        NEWS_API_KEY=xxxx
     """
-    if isinstance(file, str):
-        path = file
-        if path.endswith(".xlsx") or path.endswith(".xls"):
-            df = pd.read_excel(path)
-        else:
-            df = pd.read_csv(path)
-    else:
-        # streamlit UploadedFile
-        name = file.name.lower()
-        if name.endswith(".xlsx") or name.endswith(".xls"):
-            df = pd.read_excel(file)
-        else:
-            df = pd.read_csv(file)
-
-    df = _standardize_columns(df)
-
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
-    if missing:
-        raise ValueError(f"缺少必要列: {missing}. 需要列 {REQUIRED_COLS}")
-
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-
-    num_cols = ["open", "high", "low", "close", "volume"]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # 如果有整行都是 NaN 的，可以顺手丢掉
-    df = df.dropna(subset=["close"])
-
-    return df
-
-def fetch_akshare_ohlcv(
-    symbol: str,
-    start_date: str = "20150101",
-    end_date: Optional[str] = None,
-) -> pd.DataFrame:
-    """
-    使用 AkShare 抓取 A 股日 K 数据，并整理成统一 OHLCV 格式：
-    ['date', 'open', 'high', 'low', 'close', 'volume'].
-
-    symbol 示例：
-        "600519" 自动补成 "sh600519"
-        "000001" 自动补成 "sz000001"
-        也可以直接传 "sh600519" / "sz000001"
-    """
-    if ak is None:
+    api_key = (
+        os.getenv("NEWS_API_KEY")
+        or os.getenv("NEWSAPI_KEY")
+        or os.getenv("NEWS_API_TOKEN")
+    )
+    if not api_key:
         raise RuntimeError(
-            "未安装 akshare，请先在环境中执行：\n"
-            "    pip install akshare\n"
-            "再重新运行本程序。"
+            "未找到 NewsAPI API Key，请在环境变量中设置 NEWS_API_KEY 或 NEWSAPI_KEY。"
+        )
+    return api_key
+
+
+def search_stock_news(query: str, max_results: int = 10) -> List[NewsItem]:
+    """
+    使用 NewsAPI 搜索与股票相关的最新新闻。
+
+    query: 股票代码或公司名，如 "600519" / "贵州茅台" / "AAPL"
+    max_results: 返回的最大新闻数
+    """
+    api_key = _get_news_api_key()
+    url = "https://newsapi.org/v2/everything"
+
+    params = {
+        "q": query,
+        "language": "zh",   # 主要中文新闻；如果搜不到，可以改为 "en" 或去掉
+        "sortBy": "publishedAt",
+        "pageSize": max_results,
+        "apiKey": api_key,
+    }
+
+    resp = requests.get(url, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    articles = data.get("articles", [])
+    items: List[NewsItem] = []
+
+    for art in articles:
+        title = art.get("title") or ""
+        if not title:
+            continue
+        description = art.get("description")
+        url_ = art.get("url") or ""
+        source_name = (art.get("source") or {}).get("name") or ""
+        published_at_str = art.get("publishedAt") or ""
+        try:
+            published_at = datetime.fromisoformat(published_at_str.replace("Z", "+00:00"))
+        except Exception:
+            published_at = datetime.utcnow()
+
+        content = art.get("content")
+        items.append(
+            NewsItem(
+                title=title,
+                description=description,
+                url=url_,
+                source=source_name,
+                published_at=published_at,
+                content=content,
+            )
         )
 
-    sym = symbol.strip().lower()
-    if not (sym.startswith("sh") or sym.startswith("sz")):
-        # 简单规则：6 开头 → 上证，其他 → 深证
-        if sym.startswith("6"):
-            sym = "sh" + sym
-        else:
-            sym = "sz" + sym
+    return items
 
-    if end_date is None:
-        end_date = datetime.today().strftime("%Y%m%d")
 
-    # AkShare 常用接口：stock_zh_a_hist
-    # 返回可能是中文列名，也可能是英文，这里做兼容处理
-    df = ak.stock_zh_a_hist(
-        symbol=sym,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust="qfq",   # 前复权
-    )
+# ============================================================
+# K 线加载 & 特征工程
+# ============================================================
 
-    if df is None or df.empty:
-        raise ValueError(f"AkShare 返回空数据，请检查股票代码是否正确：{symbol}（实际请求：{sym}）")
+def load_ohlcv(csv_path: str) -> pd.DataFrame:
+    """
+    从本地 CSV 加载 OHLCV，确保有：
+        date, open, high, low, close, volume
+    现在你主流程用的是 yfinance，这个函数主要是为了兼容已有代码。
+    """
+    df = pd.read_csv(csv_path)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    else:
+        # 如果没有 date，尝试用索引 / 第一列
+        df.insert(0, "date", pd.to_datetime(df.iloc[:, 0]))
 
-    # 兼容中文列名
-    col_map = {}
-    if "日期" in df.columns:
-        col_map["日期"] = "date"
-    if "开盘" in df.columns:
-        col_map["开盘"] = "open"
-    if "最高" in df.columns:
-        col_map["最高"] = "high"
-    if "最低" in df.columns:
-        col_map["最低"] = "low"
-    if "收盘" in df.columns:
-        col_map["收盘"] = "close"
-    if "成交量" in df.columns:
-        col_map["成交量"] = "volume"
+    # 兼容 yfinance 默认列名
+    rename_map = {
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Adj Close": "adj_close",
+        "Volume": "volume",
+    }
+    df = df.rename(columns=rename_map)
 
-    df = df.rename(columns=col_map)
-
-    # 再统一走一次你原来的 _standardize_columns + 数值清洗逻辑
-    df = _standardize_columns(df)
+    # 如果没有 close，就用 adj_close 顶上
+    if "close" not in df.columns and "adj_close" in df.columns:
+        df["close"] = df["adj_close"]
 
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
-        raise ValueError(f"AkShare 数据缺少必要列: {missing}，原始列为: {list(df.columns)}")
+        raise ValueError(f"CSV 中缺少必要列: {missing}")
 
+    df = df[REQUIRED_COLS].copy()
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
-
-    num_cols = ["open", "high", "low", "close", "volume"]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    df = df.dropna(subset=["close"])
-
     return df
-
-
-
-def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    up = np.where(delta > 0, delta, 0.0)
-    down = np.where(delta < 0, -delta, 0.0)
-    roll_up = pd.Series(up).rolling(period).mean()
-    roll_down = pd.Series(down).rolling(period).mean()
-    rs = roll_up / (roll_down + 1e-9)
-    return 100 - (100 / (1 + rs))
 
 
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    用过去信息构造特征（不泄露未来）
+    输入原始 OHLCV，输出包含各种技术指标的特征 DataFrame。
+
+    返回的 DataFrame 至少包含：
+        - date
+        - close       （作为目标）
+        - 其他若干数值型特征列
+
+    注意：这里不会对 DataFrame 整体调用 to_numeric，而是逐列处理，
+    避免出现 “arg must be a list, tuple, 1-d array, or Series” 的错误。
     """
+    if df is None or df.empty:
+        raise ValueError("输入 df 为空。")
+
     x = df.copy()
-    num_cols = ["open", "high", "low", "close", "volume"]
-    for c in num_cols:
+
+    # 确保列齐全
+    rename_map = {
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Adj Close": "adj_close",
+        "Volume": "volume",
+    }
+    x = x.rename(columns=rename_map)
+
+    # date 处理 & 排序
+    if "date" in x.columns:
+        x["date"] = pd.to_datetime(x["date"])
+        x = x.sort_values("date").reset_index(drop=True)
+
+    missing = [c for c in REQUIRED_COLS if c not in x.columns]
+    if missing:
+        raise ValueError(f"make_features: 缺少必要列: {missing}")
+
+    # 保证价格和成交量是数值型（逐列 to_numeric 不会报你那种错）
+    numeric_cols = ["open", "high", "low", "close", "volume"]
+    for c in numeric_cols:
         x[c] = pd.to_numeric(x[c], errors="coerce")
-    x["ret1"] = x["close"].pct_change()
-    x["ret5"] = x["close"].pct_change(5)
-    x["sma5"] = x["close"].rolling(5).mean()
-    x["sma10"] = x["close"].rolling(10).mean()
-    x["sma20"] = x["close"].rolling(20).mean()
-    x["ema10"] = x["close"].ewm(span=10, adjust=False).mean()
-    x["volatility10"] = x["ret1"].rolling(10).std()
-    x["rsi14"] = rsi(x["close"], 14)
-    x["vol_chg"] = x["volume"].pct_change()
 
-    # 滞后特征（昨天、前天的收盘/回报）
-    for lag in [1, 2, 3, 5]:
-        x[f"close_lag{lag}"] = x["close"].shift(lag)
-        x[f"ret1_lag{lag}"] = x["ret1"].shift(lag)
+    # ========== 简单技术指标示例 ==========
+    # 1 日收益率
+    x["ret_1"] = x["close"].pct_change()
 
+    # 移动均线 & 波动率
+    for w in (3, 5, 10, 20):
+        x[f"ma_{w}"] = x["close"].rolling(w).mean()
+        x[f"ret_std_{w}"] = x["ret_1"].rolling(w).std()
+        x[f"vol_ma_{w}"] = x["volume"].rolling(w).mean()
+
+    # 价格相对 20 日均线的偏离
+    x["close_over_ma20"] = x["close"] / (x["ma_20"] + 1e-8)
+
+    # 保留 date + close + 所有特征列
+    # HybridForecaster 里会用到 date、close 和其他特征
     return x
 
+
+# ============================================================
+# 随机森林模型：仅基价特征
+# ============================================================
 
 @dataclass
 class ForecastResult:
@@ -197,171 +215,113 @@ class ForecastResult:
     test_mape: Optional[float]
 
 
-# ============ 新增：新闻数据结构 & 搜索函数 ============
-
-@dataclass
-class NewsItem:
-    title: str
-    url: str
-    published_at: datetime
-    source: str
-    description: str
-
-
-def _get_news_api_key() -> str:
-    """
-    从环境变量读取 NewsAPI 的 key.
-    你可以在 shell 里 export:
-        export NEWSAPI_API_KEY="xxxxx"
-    """
-    key = os.getenv("NEWSAPI_API_KEY")
-    if not key:
-        raise RuntimeError(
-            "未配置新闻 API Key。请设置环境变量 NEWSAPI_API_KEY，例如：\n"
-            'export NEWSAPI_API_KEY="你的 NewsAPI key"'
-        )
-    return key
-
-
-def search_stock_news(query: str, max_results: int = 10) -> List[NewsItem]:
-    """
-    使用 NewsAPI 搜索与股票相关的最新新闻。
-
-    query: 股票代码或公司名，如 "600519" 或 "贵州茅台" 或 "AAPL"
-    max_results: 返回的最大新闻数
-    """
-    api_key = _get_news_api_key()
-
-    url = "https://newsapi.org/v2/everything"
-    # 这里可以根据需要调节时间区间 / 语言等
-    params = {
-        "q": query,
-        "language": "zh",      # 主要中文新闻；可以改成 "en" 或不填
-        "sortBy": "publishedAt",
-        "pageSize": max_results,
-    }
-    headers = {"X-Api-Key": api_key}
-
-    resp = requests.get(url, params=params, headers=headers, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-
-    articles = data.get("articles", [])
-    results: List[NewsItem] = []
-
-    for art in articles:
-        title = art.get("title") or ""
-        url_ = art.get("url") or ""
-        desc = art.get("description") or ""
-        source = (art.get("source") or {}).get("name") or ""
-        published_str = art.get("publishedAt") or ""
-
-        try:
-            published_dt = (
-                datetime.fromisoformat(published_str.replace("Z", "+00:00"))
-                if published_str
-                else datetime.utcnow()
-            )
-        except Exception:
-            published_dt = datetime.utcnow()
-
-        results.append(
-            NewsItem(
-                title=title,
-                url=url_,
-                published_at=published_dt,
-                source=source,
-                description=desc,
-            )
-        )
-
-    return results
-
-# ================== 原有预测类不变 ==================
-
 class StockForecaster:
     """
-    一个离线、轻量的“短期趋势预测”Demo：
-    - 特征工程
-    - 随机森林回归预测下一日 Close
-    - 递归多步预测未来 horizon 天
+    仅使用价格特征（make_features）做回归预测的 RandomForest 封装。
     """
 
-    def __init__(self, n_estimators: int = 400, random_state: int = 42):
+    def __init__(
+        self,
+        n_estimators: int = 400,
+        random_state: int = 42,
+        min_train_size: int = 60,
+    ):
         self.model = RandomForestRegressor(
             n_estimators=n_estimators,
             random_state=random_state,
             n_jobs=-1,
         )
-        self.feature_cols: List[str] = []
+        self.min_train_size = min_train_size
         self.fitted = False
 
-    def fit(self, df: pd.DataFrame) -> Optional[float]:
-        feat = make_features(df)
-        feat = feat.dropna().reset_index(drop=True)
+    # --------------------------------------------------------
 
-        # 预测目标：下一天 close
-        feat["target"] = feat["close"].shift(-1)
-        feat = feat.dropna()
+    def fit(self, df: pd.DataFrame) -> float:
+        """
+        用历史数据训练随机森林，并返回一个简单的 Test MAPE 作为参考。
+        """
+        feat = make_features(df).dropna().reset_index(drop=True)
 
-        y = feat["target"].values
-        # 去掉非特征列
-        drop_cols = ["date", "target"]
-        self.feature_cols = [c for c in feat.columns if c not in drop_cols]
+        if len(feat) < self.min_train_size:
+            raise ValueError(
+                f"数据太少：特征行数 {len(feat)} < min_train_size={self.min_train_size}"
+            )
 
-        X = feat[self.feature_cols].values
+        # 特征 / 目标
+        X = feat.drop(columns=["date", "close"]).values
+        y = feat["close"].values
 
-        # 简单时间序列切分：最后 20% 当测试集
-        split = int(len(feat) * 0.8)
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
+        # 简单划分：前 80% 训练，后 20% 测试
+        split_idx = int(len(feat) * 0.8)
+        if split_idx <= 0 or split_idx >= len(feat):
+            # 极端情况：直接全量训练，不算 MAPE
+            self.model.fit(X, y)
+            self.fitted = True
+            return np.nan
+
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
 
         self.model.fit(X_train, y_train)
         self.fitted = True
 
-        # 测试集 MAPE（仅做参考）
-        if len(X_test) > 0:
-            pred = self.model.predict(X_test)
-            mape = float(np.mean(np.abs((y_test - pred) / (y_test + 1e-9))) * 100)
-            return mape
-        return None
+        y_pred = self.model.predict(X_test)
+        eps = 1e-8
+        mape = float(np.mean(np.abs((y_test - y_pred) / (y_test + eps))) * 100.0)
+        return mape
 
-    def _next_day_features(self, hist_df: pd.DataFrame) -> np.ndarray:
-        feat = make_features(hist_df).dropna()
-        last_row = feat.iloc[-1]
-        return last_row[self.feature_cols].values.reshape(1, -1)
+    # --------------------------------------------------------
 
-    def predict_future(self, df: pd.DataFrame, horizon: int = 5) -> ForecastResult:
+    def predict_future(
+        self,
+        df: pd.DataFrame,
+        horizon: int = 5,
+    ) -> ForecastResult:
+        """
+        递归方式预测未来 horizon 天的 close，并返回 ForecastResult。
+        """
         if not self.fitted:
             mape = self.fit(df)
         else:
-            mape = None
+            mape = np.nan
 
+        # 用一份可变副本递推未来数据
         hist = df.copy()
-        preds = []
-        dates = []
+        if "date" not in hist.columns:
+            raise ValueError("predict_future: df 中缺少 'date' 列。")
+        hist["date"] = pd.to_datetime(hist["date"])
+        hist = hist.sort_values("date").reset_index(drop=True)
 
-        last_date = hist["date"].iloc[-1]
+        preds: List[float] = []
+        dates: List[datetime] = []
 
-        for i in range(horizon):
-            X_next = self._next_day_features(hist)
-            next_close = float(self.model.predict(X_next)[0])
+        last_date = hist["date"].max()
 
+        for _ in range(horizon):
+            feat_all = make_features(hist).dropna().reset_index(drop=True)
+            if feat_all.empty:
+                raise RuntimeError("预测时特征为空，请检查输入数据。")
+
+            last_row = feat_all.iloc[-1]
+            X_last = last_row.drop(labels=["date", "close"]).values.reshape(1, -1)
+
+            next_close = float(self.model.predict(X_last)[0])
+
+            # 这里简单地 +1 天；实际项目可以改成交易日逻辑
             next_date = last_date + pd.Timedelta(days=1)
             last_date = next_date
 
             preds.append(next_close)
             dates.append(next_date)
 
-            # 为了递归预测，构造“下一天的伪数据”
-            # open/high/low 这里用 close 近似（Demo 简化）
+            # 将预测值 append 回 hist，用于下一步递推
             new_row = {
                 "date": next_date,
                 "open": next_close,
                 "high": next_close,
                 "low": next_close,
                 "close": next_close,
-                "volume": hist["volume"].iloc[-1],  # volume 用最近值
+                "volume": hist["volume"].iloc[-1],  # 简单沿用前一日成交量
             }
             hist = pd.concat([hist, pd.DataFrame([new_row])], ignore_index=True)
 
