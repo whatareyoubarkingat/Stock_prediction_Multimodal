@@ -255,7 +255,7 @@ class StockForecaster:
         self,
         n_estimators: int = 400,
         random_state: int = 42,
-        min_train_size: int = 60,
+        min_train_size: int = 10,
     ):
         self.model = RandomForestRegressor(
             n_estimators=n_estimators,
