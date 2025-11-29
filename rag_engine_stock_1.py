@@ -270,25 +270,39 @@ class StockForecaster:
     def fit(self, df: pd.DataFrame) -> float:
         """
         用历史数据训练随机森林，并返回一个简单的 Test MAPE 作为参考。
+        数据太少的时候，不再让 sklearn 报错，而是：
+          - 如果完全没有特征行：直接抛出友好的 ValueError
+          - 如果行数很少：全量训练，不做 train/test 拆分，MAPE 返回 NaN
         """
         feat = make_features(df).dropna().reset_index(drop=True)
 
+        # ✅ 1. 完全没特征的情况，直接给出清晰错误信息
+        if len(feat) == 0:
+            raise ValueError(
+                "特征行数为 0：历史数据区间太短，或者全部被技术指标的 NaN 丢掉了，"
+                "请在前端把 yfinance 的历史区间调大一些（建议至少 6 个月或 1 年）。"
+            )
+
+        X_df = feat.drop(columns=["date", "close"])
+        if X_df.shape[1] == 0:
+            raise ValueError(
+                "没有可用的特征列（除 date/close 外都被筛掉了），"
+                "请检查 make_features 是否正确添加了特征。"
+            )
+
+        X = X_df.values
+        y = feat["close"].values
+
+        # ✅ 2. 行数太少时，直接全量训练，不拆 train/test，避免 sklearn 对 0 行报错
         if len(feat) < self.min_train_size:
-            # 数据太少，直接全量训练，不做 train/test 拆分，也不算 MAPE
-            X = feat.drop(columns=["date", "close"]).values
-            y = feat["close"].values
             self.model.fit(X, y)
             self.fitted = True
             return float("nan")
 
-
-        X = feat.drop(columns=["date", "close"]).values
-        y = feat["close"].values
-
-        # 简单划分：前 80% 训练，后 20% 测试
+        # ✅ 3. 行数足够时，正常做 8:2 划分
         split_idx = int(len(feat) * 0.8)
         if split_idx <= 0 or split_idx >= len(feat):
-            # 极端情况：直接全量训练，不算 MAPE
+            # 理论上不会走到这里，留个兜底
             self.model.fit(X, y)
             self.fitted = True
             return float("nan")
@@ -303,6 +317,7 @@ class StockForecaster:
         eps = 1e-8
         mape = float(np.mean(np.abs((y_test - y_pred) / (y_test + eps))) * 100.0)
         return mape
+
 
     # ------------------------------------------------------------
 
