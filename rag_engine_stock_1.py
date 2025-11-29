@@ -274,9 +274,13 @@ class StockForecaster:
         feat = make_features(df).dropna().reset_index(drop=True)
 
         if len(feat) < self.min_train_size:
-            raise ValueError(
-                f"数据太少：特征行数 {len(feat)} < min_train_size={self.min_train_size}"
-            )
+            # 数据太少，直接全量训练，不做 train/test 拆分，也不算 MAPE
+            X = feat.drop(columns=["date", "close"]).values
+            y = feat["close"].values
+            self.model.fit(X, y)
+            self.fitted = True
+            return float("nan")
+
 
         X = feat.drop(columns=["date", "close"]).values
         y = feat["close"].values
