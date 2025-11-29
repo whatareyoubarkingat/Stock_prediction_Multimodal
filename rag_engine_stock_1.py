@@ -249,13 +249,16 @@ class ForecastResult:
 class StockForecaster:
     """
     仅使用价格特征（make_features）做回归预测的 RandomForest 封装。
+    不再因为“数据太少”抛异常，而是：
+      - 完全没有特征行：直接返回空预测结果
+      - 特征行数很少：全量训练，不做 train/test 拆分，MAPE 用 NaN
     """
 
     def __init__(
         self,
         n_estimators: int = 400,
         random_state: int = 42,
-        min_train_size: int = 10,
+        min_train_size: int = 10,   # 你想要的阈值
     ):
         self.model = RandomForestRegressor(
             n_estimators=n_estimators,
@@ -266,43 +269,38 @@ class StockForecaster:
         self.fitted = False
 
     # ------------------------------------------------------------
-
     def fit(self, df: pd.DataFrame) -> float:
         """
         用历史数据训练随机森林，并返回一个简单的 Test MAPE 作为参考。
-        数据太少的时候，不再让 sklearn 报错，而是：
-          - 如果完全没有特征行：直接抛出友好的 ValueError
-          - 如果行数很少：全量训练，不做 train/test 拆分，MAPE 返回 NaN
+        永远不主动 raise ValueError（避免把整个 Streamlit app 弄崩）。
         """
         feat = make_features(df).dropna().reset_index(drop=True)
 
-        # ✅ 1. 完全没特征的情况，直接给出清晰错误信息
+        # 1) 完全没有特征行：直接放弃训练，返回 NaN
         if len(feat) == 0:
-            raise ValueError(
-                "特征行数为 0：历史数据区间太短，或者全部被技术指标的 NaN 丢掉了，"
-                "请在前端把 yfinance 的历史区间调大一些（建议至少 6 个月或 1 年）。"
-            )
+            # 不训练模型，标记为未训练
+            self.fitted = False
+            return float("nan")
 
         X_df = feat.drop(columns=["date", "close"])
         if X_df.shape[1] == 0:
-            raise ValueError(
-                "没有可用的特征列（除 date/close 外都被筛掉了），"
-                "请检查 make_features 是否正确添加了特征。"
-            )
+            # 没有任何可用特征列，也不训练
+            self.fitted = False
+            return float("nan")
 
         X = X_df.values
         y = feat["close"].values
 
-        # ✅ 2. 行数太少时，直接全量训练，不拆 train/test，避免 sklearn 对 0 行报错
+        # 2) 数据太少：全量训练，不拆 train/test
         if len(feat) < self.min_train_size:
             self.model.fit(X, y)
             self.fitted = True
             return float("nan")
 
-        # ✅ 3. 行数足够时，正常做 8:2 划分
+        # 3) 数据足够：正常做 8:2 划分并计算 MAPE
         split_idx = int(len(feat) * 0.8)
         if split_idx <= 0 or split_idx >= len(feat):
-            # 理论上不会走到这里，留个兜底
+            # 理论上很少发生，兜底成全量训练
             self.model.fit(X, y)
             self.fitted = True
             return float("nan")
@@ -318,9 +316,7 @@ class StockForecaster:
         mape = float(np.mean(np.abs((y_test - y_pred) / (y_test + eps))) * 100.0)
         return mape
 
-
     # ------------------------------------------------------------
-
     def predict_future(
         self,
         df: pd.DataFrame,
@@ -328,17 +324,38 @@ class StockForecaster:
     ) -> ForecastResult:
         """
         递归方式预测未来 horizon 天的 close，并返回 ForecastResult。
+        如果历史数据太短导致无法训练，则退化成“用最后一天价格横着拉”的朴素预测。
         """
+        # 如果还没训练，先尝试训练
         if not self.fitted:
             mape = self.fit(df)
         else:
             mape = float("nan")
 
-        # 用一份可变副本递推未来数据
-        hist = df.copy()
-        if "date" not in hist.columns:
-            raise ValueError("predict_future: df 中缺少 'date' 列。")
+        # 如果仍然没法训练（比如样本太少），用朴素预测兜底
+        if not self.fitted:
+            if "date" not in df.columns or "close" not in df.columns:
+                # 连兜底都做不了，只能给空结果
+                return ForecastResult(
+                    forecast_df=pd.DataFrame(columns=["date", "pred_close"]),
+                    test_mape=mape,
+                )
 
+            last_date = pd.to_datetime(df["date"]).max()
+            last_close = float(df["close"].iloc[-1])
+
+            dates = []
+            preds = []
+            for _ in range(horizon):
+                last_date = last_date + pd.Timedelta(days=1)
+                dates.append(last_date)
+                preds.append(last_close)  # 直接用最后一天价格平移
+
+            forecast_df = pd.DataFrame({"date": dates, "pred_close": preds})
+            return ForecastResult(forecast_df=forecast_df, test_mape=mape)
+
+        # -------- 正常训练成功的情况 --------
+        hist = df.copy()
         hist["date"] = pd.to_datetime(hist["date"])
         hist = hist.sort_values("date").reset_index(drop=True)
 
@@ -350,30 +367,29 @@ class StockForecaster:
         for _ in range(horizon):
             feat_all = make_features(hist).dropna().reset_index(drop=True)
             if feat_all.empty:
-                raise RuntimeError("预测时特征为空，请检查输入数据。")
+                break
 
             last_row = feat_all.iloc[-1]
             X_last = last_row.drop(labels=["date", "close"]).values.reshape(1, -1)
 
             next_close = float(self.model.predict(X_last)[0])
 
-            # 这里简单地 +1 天；实际项目可以改成“只加交易日”的逻辑
             next_date = last_date + pd.Timedelta(days=1)
             last_date = next_date
 
             preds.append(next_close)
             dates.append(next_date)
 
-            # 为了递归预测，构造“下一天的伪数据”
             new_row = {
                 "date": next_date,
                 "open": next_close,
                 "high": next_close,
                 "low": next_close,
                 "close": next_close,
-                "volume": hist["volume"].iloc[-1],  # 沿用上一日成交量
+                "volume": hist["volume"].iloc[-1],
             }
             hist = pd.concat([hist, pd.DataFrame([new_row])], ignore_index=True)
 
         forecast_df = pd.DataFrame({"date": dates, "pred_close": preds})
         return ForecastResult(forecast_df=forecast_df, test_mape=mape)
+
