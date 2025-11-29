@@ -146,8 +146,15 @@ def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
 
     df = df[required_cols].copy()
     df["date"] = pd.to_datetime(df["date"])
+
+    # ⭐ 关键：把 OHLCV 强制转成 float，所有奇怪的字符串都变 NaN
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # 按日期排序
     df = df.sort_values("date").reset_index(drop=True)
     return df
+
 
 
 # ========== 侧边栏：参数设置 ==========
@@ -198,28 +205,39 @@ st.write(f"当前获取到的历史 K 线数据条数：**{len(df)}**")
 # ========== 画历史 K 线 ==========
 st.subheader(f"历史 K 线（{ticker}）")
 
-fig = go.Figure(
-    data=[
-        go.Candlestick(
-            x=df["date"],
-            open=df["open"],
-            high=df["high"],
-            low=df["low"],
-            close=df["close"],
-            name="K-line",
-        )
-    ]
-)
-fig.update_layout(
-    height=520,
-    xaxis_rangeslider_visible=False,
-    margin=dict(l=10, r=10, t=40, b=10),
-    xaxis_title="日期",
-    yaxis_title="价格",
-)
-fig.update_yaxes(autorange=True)
+# ⭐ 只保留 OHLC 都是数值的行，用于画 K 线
+df_ohlc = df.dropna(subset=["open", "high", "low", "close"]).copy()
 
-st.plotly_chart(fig, use_container_width=True)
+st.write("用于绘制 K 线的有效数据条数：", len(df_ohlc))
+st.write("数据列类型：")
+st.write(df_ohlc.dtypes)
+
+if df_ohlc.empty:
+    st.warning("虽然成功拉取到了数据，但 OHLC 列均为非数值或 NaN，无法绘制 K 线。")
+else:
+    fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=df_ohlc["date"],
+                open=df_ohlc["open"],
+                high=df_ohlc["high"],
+                low=df_ohlc["low"],
+                close=df_ohlc["close"],
+                name="K-line",
+            )
+        ]
+    )
+    fig.update_layout(
+        height=520,
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="日期",
+        yaxis_title="价格",
+    )
+    fig.update_yaxes(autorange=True)
+
+    st.plotly_chart(fig, use_container_width=True)
+
 
 st.markdown("---")
 
