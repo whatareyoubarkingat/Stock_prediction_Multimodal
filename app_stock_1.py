@@ -99,7 +99,7 @@ if not st.session_state.accepted_disclaimer:
     disclaimer_dialog()
 
 # ========== 标题 ==========
-st.title("📈 K线预测（yfinance + 新闻）")
+st.title("📈 K线预测")
 st.caption("⚠️ 仅用于学习 / 演示，不构成任何投资建议。")
 
 
