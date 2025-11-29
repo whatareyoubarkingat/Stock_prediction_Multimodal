@@ -152,7 +152,7 @@ with st.sidebar:
 
     ticker = st.text_input(
         "股票代码（yfinance 格式）",
-        value="600519.SS",
+        value="AAPL",
         help="例如：AAPL、MSFT、600519.SS 等",
     )
 
