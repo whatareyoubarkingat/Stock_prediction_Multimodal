@@ -317,7 +317,7 @@ class StockForecaster:
         return mape
 
     # ------------------------------------------------------------
-        def predict_future(
+    def predict_future(
         self,
         df: pd.DataFrame,
         horizon: int = 5,
