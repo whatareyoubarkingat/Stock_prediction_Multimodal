@@ -7,6 +7,7 @@ from rag_engine_stock_1 import (
     StockForecaster,
     search_stock_news,
     NewsItem,
+    fetch_akshare_ohlcv,   # 新增
 )
 
 from stock_engine_hybrid import HybridForecaster
@@ -52,6 +53,10 @@ If you do not agree with the above terms, please discontinue using this system i
 # ====== 1) 初始化是否同意免责声明的状态 ======
 if "accepted_disclaimer" not in st.session_state:
     st.session_state.accepted_disclaimer = False
+
+    # 新增：保存 AkShare 抓取的 DataFrame
+if "ak_df" not in st.session_state:
+    st.session_state.ak_df = None
 
 
 # ====== 2) 弹窗(对话框)：用户必须勾选同意 ======
@@ -110,6 +115,32 @@ with st.sidebar:
     horizon = st.slider("预测未来天数", 1, 30, 5)
     train_btn = st.button("训练并预测")
 
+        # ====== 新增：A 股数据抓取（AkShare） ======
+    st.markdown("---")
+    st.header("A股历史数据（AkShare）")
+
+    ak_symbol = st.text_input(
+        "A股股票代码（如 600519 或 sh600519）",
+        value="",
+        placeholder="不想上传文件时可直接输入，如：600519"
+    )
+    ak_fetch_btn = st.button("从 AkShare 抓取历史数据")
+
+    if ak_fetch_btn:
+        if not ak_symbol.strip():
+            st.warning("请输入股票代码，例如：600519 / sh600519。")
+        else:
+            try:
+                with st.spinner("正在通过 AkShare 抓取 A股历史数据..."):
+                    ak_df = fetch_akshare_ohlcv(ak_symbol.strip())
+                st.session_state.ak_df = ak_df
+                st.success(f"已成功抓取 {ak_symbol.strip()} 的历史数据，共 {len(ak_df)} 行。")
+            except Exception as e:
+                st.session_state.ak_df = None
+                st.error(f"AkShare 抓取失败：{e}")
+
+
+
     st.markdown("---")
     st.header("新闻参考（可选）")
 
@@ -120,16 +151,29 @@ with st.sidebar:
     )
     news_btn = st.button("搜索相关新闻")
 
-if uploaded is None:
-    st.info("请先在左侧上传 CSV/XLSX 数据文件。")
+# ================= 选择数据源：上传文件 OR AkShare 抓取 =================
+df = None
+data_source = ""
+
+if uploaded is not None:
+    # 1) 优先使用用户上传的文件
+    try:
+        df = load_ohlcv(uploaded)
+        data_source = "upload"
+    except Exception as e:
+        st.error(f"数据读取失败（上传文件）：{e}")
+        st.stop()
+else:
+    # 2) 如果没上传文件，尝试使用 AkShare 抓取的 df
+    ak_df = st.session_state.get("ak_df", None)
+    if ak_df is not None:
+        df = ak_df.copy()
+        data_source = "akshare"
+
+if df is None:
+    st.info("请在左侧 **上传 CSV/XLSX**，或输入 A股股票代码并点击 **从 AkShare 抓取历史数据**。")
     st.stop()
 
-# 读取数据
-try:
-    df = load_ohlcv(uploaded)
-except Exception as e:
-    st.error(f"数据读取失败：{e}")
-    st.stop()
 
 # K线图
 fig = go.Figure(data=[

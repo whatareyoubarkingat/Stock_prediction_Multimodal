@@ -10,6 +10,12 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 import requests   # 新增：用于调第三方新闻 API
 
+# ====== 新增：AkShare 抓取 A 股数据 ======
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
+
 
 REQUIRED_COLS = ["date", "open", "high", "low", "close", "volume"]
 
@@ -66,6 +72,87 @@ def load_ohlcv(file) -> pd.DataFrame:
     df = df.dropna(subset=["close"])
 
     return df
+
+def fetch_akshare_ohlcv(
+    symbol: str,
+    start_date: str = "20150101",
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    使用 AkShare 抓取 A 股日 K 数据，并整理成统一 OHLCV 格式：
+    ['date', 'open', 'high', 'low', 'close', 'volume'].
+
+    symbol 示例：
+        "600519" 自动补成 "sh600519"
+        "000001" 自动补成 "sz000001"
+        也可以直接传 "sh600519" / "sz000001"
+    """
+    if ak is None:
+        raise RuntimeError(
+            "未安装 akshare，请先在环境中执行：\n"
+            "    pip install akshare\n"
+            "再重新运行本程序。"
+        )
+
+    sym = symbol.strip().lower()
+    if not (sym.startswith("sh") or sym.startswith("sz")):
+        # 简单规则：6 开头 → 上证，其他 → 深证
+        if sym.startswith("6"):
+            sym = "sh" + sym
+        else:
+            sym = "sz" + sym
+
+    if end_date is None:
+        end_date = datetime.today().strftime("%Y%m%d")
+
+    # AkShare 常用接口：stock_zh_a_hist
+    # 返回可能是中文列名，也可能是英文，这里做兼容处理
+    df = ak.stock_zh_a_hist(
+        symbol=sym,
+        period="daily",
+        start_date=start_date,
+        end_date=end_date,
+        adjust="qfq",   # 前复权
+    )
+
+    if df is None or df.empty:
+        raise ValueError(f"AkShare 返回空数据，请检查股票代码是否正确：{symbol}（实际请求：{sym}）")
+
+    # 兼容中文列名
+    col_map = {}
+    if "日期" in df.columns:
+        col_map["日期"] = "date"
+    if "开盘" in df.columns:
+        col_map["开盘"] = "open"
+    if "最高" in df.columns:
+        col_map["最高"] = "high"
+    if "最低" in df.columns:
+        col_map["最低"] = "low"
+    if "收盘" in df.columns:
+        col_map["收盘"] = "close"
+    if "成交量" in df.columns:
+        col_map["成交量"] = "volume"
+
+    df = df.rename(columns=col_map)
+
+    # 再统一走一次你原来的 _standardize_columns + 数值清洗逻辑
+    df = _standardize_columns(df)
+
+    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(f"AkShare 数据缺少必要列: {missing}，原始列为: {list(df.columns)}")
+
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    num_cols = ["open", "high", "low", "close", "volume"]
+    for c in num_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["close"])
+
+    return df
+
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
