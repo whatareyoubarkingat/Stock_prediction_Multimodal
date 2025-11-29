@@ -1,4 +1,5 @@
-# app_stock_yf.py / app_stock_1.py
+# app_stock_1.py / app_stock_yf.py
+
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
@@ -13,9 +14,12 @@ from rag_engine_stock_1 import (
 from stock_engine_hybrid import HybridForecaster
 
 
-# ====== 免责声明文本 ======
+# ========== 页面配置 ==========
+st.set_page_config(page_title="Stock K-line Forecast (yfinance)", layout="wide")
+
+# ========== 免责声明文本 ==========
 DISCLAIMER_TEXT = """
-**【重要声明：使用本系统即视为您已完全理解并接受以下条款】**
+**【重要声明：使用本系统即视为您已完全理解并同意以下条款】**
 
 本系统仅为技术演示、学术研究和个人学习目的而开发，不构成任何形式的投资建议、财务建议、证券交易建议或风险提示。
 系统输出由算法自动生成，可能存在错误或偏差，不保证准确性与可靠性。
@@ -47,10 +51,10 @@ If you do not agree with the above terms, please discontinue using this system i
 **本システムを利用して行った投資判断によって生じるすべてのリスクおよび結果は、利用者自身の責任となります。**  
 本システムの利用または利用不能によって発生した直接的または間接的な損害について、開発者は一切の責任を負いません。
 
-上記の条項に同意できない場合は、直ちに本システムの利用を中止してください。
+上記の条款に同意できない場合は、直ちに本システムの利用を中止してください。
 """
 
-# ====== 是否同意免责声明 ======
+# ========== 是否同意免责声明 ==========
 if "accepted_disclaimer" not in st.session_state:
     st.session_state.accepted_disclaimer = False
 
@@ -94,12 +98,12 @@ def disclaimer_dialog():
 if not st.session_state.accepted_disclaimer:
     disclaimer_dialog()
 
-st.set_page_config(page_title="Stock K-line Forecast (yfinance)", layout="wide")
+# ========== 标题 ==========
 st.title("📈 K线预测（yfinance + 新闻）")
 st.caption("⚠️ 仅用于学习 / 演示，不构成任何投资建议。")
 
 
-# ====== 使用 yfinance 下载 OHLCV ======
+# ========== 使用 yfinance 下载 OHLCV ==========
 def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
     """
     从 yfinance 下载日线 K 线数据，并转换为统一的
@@ -146,20 +150,20 @@ def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
     return df
 
 
-# ====== 侧边栏：只输入一个代码 + 参数 ======
+# ========== 侧边栏：参数设置 ==========
 with st.sidebar:
     st.header("参数设置")
 
     ticker = st.text_input(
         "股票代码（yfinance 格式）",
-        value="AAPL",
+        value="AAPL",  # 默认 AAPL
         help="例如：AAPL、MSFT、600519.SS 等",
     )
 
     period = st.selectbox(
         "历史数据区间",
         options=["3mo", "6mo", "1y", "2y", "5y"],
-        index=2,
+        index=2,  # 默认 1y
     )
 
     horizon = st.slider("预测未来天数", 1, 30, 5)
@@ -177,40 +181,52 @@ if not ticker:
     st.warning("请先输入股票代码。")
     st.stop()
 
-# ====== 1. 用 yfinance 下载历史 K 线 ======
+# ========== 1. 用 yfinance 下载历史 K 线 ==========
 try:
-    with st.spinner(f"正在从 yfinance 下载 {ticker} 的历史 K 线数据..."):
+    with st.spinner(f"正在从 yfinance 下载 {ticker} 的历史 K 线数据（{period}）..."):
         df = fetch_ohlcv_from_yf(ticker, period=period)
 except Exception as e:
     st.error(f"下载 K 线数据失败：{e}")
     st.stop()
 
-# 画历史 K 线
+if df.empty:
+    st.error("历史 K 线数据为空，请尝试调整股票代码或时间区间。")
+    st.stop()
+
+st.write(f"当前获取到的历史 K 线数据条数：**{len(df)}**")
+
+# ========== 画历史 K 线 ==========
 st.subheader(f"历史 K 线（{ticker}）")
-fig = go.Figure(data=[
-    go.Candlestick(
-        x=df["date"],
-        open=df["open"],
-        high=df["high"],
-        low=df["low"],
-        close=df["close"],
-        name="K-line"
-    )
-])
+
+fig = go.Figure(
+    data=[
+        go.Candlestick(
+            x=df["date"],
+            open=df["open"],
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            name="K-line",
+        )
+    ]
+)
 fig.update_layout(
     height=520,
     xaxis_rangeslider_visible=False,
     margin=dict(l=10, r=10, t=40, b=10),
+    xaxis_title="日期",
+    yaxis_title="价格",
 )
+fig.update_yaxes(autorange=True)
+
 st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
-# ====== 2. 使用股票代码自动搜索相关新闻 ======
+# ========== 2. 使用股票代码自动搜索相关新闻 ==========
 with st.spinner("正在搜索相关新闻（第三方数据源，仅供参考）..."):
     try:
-        # 这里直接用 ticker 作为关键词；如果你想更智能，
-        # 可以自己写一个映射，把 600519.SS → 贵州茅台 等
+        # 这里直接用 ticker 作为关键词；
         news_list = search_stock_news(ticker, max_results=100)
     except Exception as e:
         st.error(f"新闻搜索失败（不会中断预测，只是无法用到新闻特征）：{e}")
@@ -223,7 +239,7 @@ if news_list:
         "请勿将其视为任何形式的投资建议。"
     )
 
-    # 这里只展示前 8 条，避免太长
+    # 展示前 8 条
     for item in news_list[:8]:
         with st.expander(
             f"{item.title} —— {item.source}｜{item.published_at.strftime('%Y-%m-%d %H:%M')}"
@@ -236,12 +252,14 @@ else:
 
 st.markdown("---")
 
-# ====== 3. 训练 + 预测：优先用多模态 (价格 + 新闻)，失败则回退随机森林 ======
+# ========== 3. 训练 + 预测：优先用多模态，失败 / 数据短则回退随机森林 ==========
 result = None
 use_hybrid = False
 
-# 有足够新闻才尝试多模态
-if len(news_list) >= 2:
+# 为多模态模型设一个“最小 K 线长度”门槛，避免频繁报“数据太短”
+MIN_SEQ_LEN_FOR_HYBRID = 120
+
+if len(df) >= MIN_SEQ_LEN_FOR_HYBRID and len(news_list) >= 2:
     try:
         with st.spinner("正在训练『价格 + 新闻』多模态模型 (GRU)..."):
             hf = HybridForecaster()
@@ -253,43 +271,67 @@ if len(news_list) >= 2:
             result = hybrid_result
             use_hybrid = True
     except Exception as e:
+        # 不让整个 app 崩掉，只给一个提示，然后回退到价格模型
         st.error(f"多模态模型训练/预测失败，将自动回退到纯价格模型。错误信息：{e}")
         use_hybrid = False
+else:
+    # 提示一下为什么没用多模态（可选）
+    if len(df) < MIN_SEQ_LEN_FOR_HYBRID:
+        st.info(
+            f"历史 K 线数据不足 {MIN_SEQ_LEN_FOR_HYBRID} 条，"
+            "暂不启用多模态模型，将直接使用价格模型。"
+        )
+    elif len(news_list) < 2:
+        st.info("相关新闻条数过少，暂不启用多模态模型，将直接使用价格模型。")
 
-# 如果新闻太少 or 多模态失败，就回退到之前的随机森林模型
+# 如果新闻太少或多模态失败，就回退到随机森林模型
 if not use_hybrid:
     with st.spinner("正在训练随机森林模型（仅使用价格特征）..."):
         rf = StockForecaster()
         rf_result = rf.predict_future(df, horizon=horizon)
         result = rf_result
 
-# ====== 4. 展示预测结果 ======
+# ========== 4. 展示预测结果 ==========
 st.subheader("预测结果")
 
 if use_hybrid:
-    if result.test_mae is not None:
+    # HybridForecaster 里一般是 test_mae
+    if getattr(result, "test_mae", None) is not None:
         st.write(f"测试集 MAE（仅参考）：**{result.test_mae:.4f}**")
     st.caption("当前使用模型：价格 + 新闻文本 的序列模型（GRU，多模态）。")
     forecast_df = result.forecast_df
 else:
-    if result.test_mape is not None:
+    if getattr(result, "test_mape", None) is not None:
         st.write(f"测试集 MAPE（仅参考）：**{result.test_mape:.2f}%**")
     st.caption("当前使用模型：仅基于价格特征的随机森林回归。")
     forecast_df = result.forecast_df
 
 # 预测曲线：历史 close + 未来预测
 fig2 = go.Figure()
-fig2.add_trace(go.Scatter(
-    x=df["date"], y=df["close"],
-    mode="lines", name="历史 Close"
-))
-fig2.add_trace(go.Scatter(
-    x=forecast_df["date"],
-    y=forecast_df["pred_close"],
-    mode="lines+markers",
-    name="预测 Close"
-))
-fig2.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=10))
+fig2.add_trace(
+    go.Scatter(
+        x=df["date"],
+        y=df["close"],
+        mode="lines",
+        name="历史 Close",
+    )
+)
+fig2.add_trace(
+    go.Scatter(
+        x=forecast_df["date"],
+        y=forecast_df["pred_close"],
+        mode="lines+markers",
+        name="预测 Close",
+    )
+)
+fig2.update_layout(
+    height=420,
+    margin=dict(l=10, r=10, t=40, b=10),
+    xaxis_title="日期",
+    yaxis_title="价格",
+)
+fig2.update_yaxes(autorange=True)
+
 st.plotly_chart(fig2, use_container_width=True)
 
 # 预测数据表
@@ -301,5 +343,5 @@ st.download_button(
     "下载预测结果 CSV",
     data=csv_bytes,
     file_name=f"{ticker}_forecast.csv",
-    mime="text/csv"
+    mime="text/csv",
 )
