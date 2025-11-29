@@ -108,6 +108,7 @@ def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
     """
     从 yfinance 下载日线 K 线数据，并转换为统一的
     [date, open, high, low, close, volume] 格式。
+    自动处理 yfinance 返回的 MultiIndex 列情况。
     """
     data = yf.download(
         symbol,
@@ -120,6 +121,10 @@ def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
     )
     if data is None or data.empty:
         raise ValueError("yfinance 未返回数据，请检查股票代码或网络连接。")
+
+    # ⭐ 关键：如果是 MultiIndex 列（比如 ('Open','AAPL')），拍平成一层
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = [str(col[0]) for col in data.columns]
 
     df = data.reset_index()
 
@@ -147,13 +152,15 @@ def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
     df = df[required_cols].copy()
     df["date"] = pd.to_datetime(df["date"])
 
-    # ⭐ 关键：把 OHLCV 强制转成 float，所有奇怪的字符串都变 NaN
+    # ⭐ 把 OHLCV 强制转成 1 维数值型
     for c in ["open", "high", "low", "close", "volume"]:
+        # 这里 df[c] 一定是 Series（上一段已经保证列名是普通字符串）
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # 按日期排序
     df = df.sort_values("date").reset_index(drop=True)
     return df
+
 
 
 
