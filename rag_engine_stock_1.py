@@ -11,6 +11,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 import requests
 
+
 # ============================================================
 # 基本配置
 # ============================================================
@@ -34,8 +35,8 @@ class NewsItem:
 
 def _get_news_api_key() -> str:
     """
-    从环境变量中获取 NewsAPI 的 key。
-    你可以在 Streamlit Cloud 的 Secrets 或本地环境里设置：
+    从环境变量获取 NewsAPI 的 key。
+    在本地或 Streamlit Cloud 的 Secrets 中设置：
         NEWS_API_KEY=xxxx
     """
     api_key = (
@@ -117,10 +118,8 @@ def load_ohlcv(csv_path: str) -> pd.DataFrame:
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
     else:
-        # 如果没有 date，尝试用索引 / 第一列
         df.insert(0, "date", pd.to_datetime(df.iloc[:, 0]))
 
-    # 兼容 yfinance 默认列名
     rename_map = {
         "Open": "open",
         "High": "high",
@@ -131,7 +130,6 @@ def load_ohlcv(csv_path: str) -> pd.DataFrame:
     }
     df = df.rename(columns=rename_map)
 
-    # 如果没有 close，就用 adj_close 顶上
     if "close" not in df.columns and "adj_close" in df.columns:
         df["close"] = df["adj_close"]
 
@@ -154,15 +152,18 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
         - close       （作为目标）
         - 其他若干数值型特征列
 
-    注意：这里不会对 DataFrame 整体调用 to_numeric，而是逐列处理，
+    这里**不会**对整个 DataFrame 直接调用 to_numeric，而是逐列处理，
     避免出现 “arg must be a list, tuple, 1-d array, or Series” 的错误。
     """
     if df is None or df.empty:
         raise ValueError("输入 df 为空。")
 
+    # 确保是 DataFrame（防御式）
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
     x = df.copy()
 
-    # 确保列齐全
     rename_map = {
         "Open": "open",
         "High": "high",
@@ -173,7 +174,6 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     }
     x = x.rename(columns=rename_map)
 
-    # date 处理 & 排序
     if "date" in x.columns:
         x["date"] = pd.to_datetime(x["date"])
         x = x.sort_values("date").reset_index(drop=True)
@@ -182,26 +182,22 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"make_features: 缺少必要列: {missing}")
 
-    # 保证价格和成交量是数值型（逐列 to_numeric 不会报你那种错）
+    # 逐列做 to_numeric（这一段就是修掉你现在这个 TypeError 的关键）
     numeric_cols = ["open", "high", "low", "close", "volume"]
     for c in numeric_cols:
         x[c] = pd.to_numeric(x[c], errors="coerce")
 
-    # ========== 简单技术指标示例 ==========
     # 1 日收益率
     x["ret_1"] = x["close"].pct_change()
 
-    # 移动均线 & 波动率
+    # 若干窗口的均线和波动率
     for w in (3, 5, 10, 20):
         x[f"ma_{w}"] = x["close"].rolling(w).mean()
         x[f"ret_std_{w}"] = x["ret_1"].rolling(w).std()
         x[f"vol_ma_{w}"] = x["volume"].rolling(w).mean()
 
-    # 价格相对 20 日均线的偏离
     x["close_over_ma20"] = x["close"] / (x["ma_20"] + 1e-8)
 
-    # 保留 date + close + 所有特征列
-    # HybridForecaster 里会用到 date、close 和其他特征
     return x
 
 
@@ -234,8 +230,6 @@ class StockForecaster:
         self.min_train_size = min_train_size
         self.fitted = False
 
-    # --------------------------------------------------------
-
     def fit(self, df: pd.DataFrame) -> float:
         """
         用历史数据训练随机森林，并返回一个简单的 Test MAPE 作为参考。
@@ -247,17 +241,14 @@ class StockForecaster:
                 f"数据太少：特征行数 {len(feat)} < min_train_size={self.min_train_size}"
             )
 
-        # 特征 / 目标
         X = feat.drop(columns=["date", "close"]).values
         y = feat["close"].values
 
-        # 简单划分：前 80% 训练，后 20% 测试
         split_idx = int(len(feat) * 0.8)
         if split_idx <= 0 or split_idx >= len(feat):
-            # 极端情况：直接全量训练，不算 MAPE
             self.model.fit(X, y)
             self.fitted = True
-            return np.nan
+            return float("nan")
 
         X_train, X_test = X[:split_idx], X[split_idx:]
         y_train, y_test = y[:split_idx], y[split_idx:]
@@ -270,8 +261,6 @@ class StockForecaster:
         mape = float(np.mean(np.abs((y_test - y_pred) / (y_test + eps))) * 100.0)
         return mape
 
-    # --------------------------------------------------------
-
     def predict_future(
         self,
         df: pd.DataFrame,
@@ -283,12 +272,12 @@ class StockForecaster:
         if not self.fitted:
             mape = self.fit(df)
         else:
-            mape = np.nan
+            mape = float("nan")
 
-        # 用一份可变副本递推未来数据
         hist = df.copy()
         if "date" not in hist.columns:
             raise ValueError("predict_future: df 中缺少 'date' 列。")
+
         hist["date"] = pd.to_datetime(hist["date"])
         hist = hist.sort_values("date").reset_index(drop=True)
 
@@ -307,21 +296,19 @@ class StockForecaster:
 
             next_close = float(self.model.predict(X_last)[0])
 
-            # 这里简单地 +1 天；实际项目可以改成交易日逻辑
             next_date = last_date + pd.Timedelta(days=1)
             last_date = next_date
 
             preds.append(next_close)
             dates.append(next_date)
 
-            # 将预测值 append 回 hist，用于下一步递推
             new_row = {
                 "date": next_date,
                 "open": next_close,
                 "high": next_close,
                 "low": next_close,
                 "close": next_close,
-                "volume": hist["volume"].iloc[-1],  # 简单沿用前一日成交量
+                "volume": hist["volume"].iloc[-1],
             }
             hist = pd.concat([hist, pd.DataFrame([new_row])], ignore_index=True)
 
