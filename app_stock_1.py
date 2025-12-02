@@ -15,7 +15,9 @@ from stock_engine_hybrid import HybridForecaster
 
 
 # ========== 页面配置 ==========
+///st.set_page_config(page_title="Stock K-line Forecast (yfinance)", layout="wide")
 st.set_page_config(page_title="Stock K-line Forecast (yfinance)", layout="wide")
+
 
 # ========== 免责声明文本 ==========
 DISCLAIMER_TEXT = """
@@ -154,14 +156,11 @@ def fetch_ohlcv_from_yf(symbol: str, period: str = "1y") -> pd.DataFrame:
 
     # ⭐ 把 OHLCV 强制转成 1 维数值型
     for c in ["open", "high", "low", "close", "volume"]:
-        # 这里 df[c] 一定是 Series（上一段已经保证列名是普通字符串）
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # 按日期排序
     df = df.sort_values("date").reset_index(drop=True)
     return df
-
-
 
 
 # ========== 侧边栏：参数设置 ==========
@@ -182,12 +181,28 @@ with st.sidebar:
 
     horizon = st.slider("预测未来天数", 1, 30, 5)
 
+    # ⭐ 新增：模型选择（自动 / 仅价格 / 多模态）
+    model_choice = st.radio(
+        "模型选择",
+        options=[
+            "自动选择（推荐）",
+            "仅价格模型（随机森林）",
+            "多模态模型（价格 + 新闻）",
+        ],
+        index=0,
+        help=(
+            "自动选择：如果新闻和历史数据足够，则优先使用多模态模型；否则回退到随机森林。\n"
+            "仅价格模型：只使用历史价格（随机森林）。\n"
+            "多模态模型：强制尝试价格 + 新闻的 GRU 模型，失败会自动回退到随机森林。"
+        ),
+    )
+
     train_btn = st.button("✅ 一键：下载数据 + 搜索新闻 + 训练并预测")
 
 
 # 没点按钮时的提示
 if not train_btn:
-    st.info("在左侧输入股票代码，然后点击「一键：下载数据 + 搜索新闻 + 训练并预测」。")
+    st.info("在左侧输入股票代码，选择模型，然后点击「一键：下载数据 + 搜索新闻 + 训练并预测」。")
     st.stop()
 
 ticker = ticker.strip()
@@ -273,48 +288,100 @@ if news_list:
                 st.write(item.description)
             st.markdown(f"[🔗 前往原文]({item.url})")
 else:
-    st.info("暂未找到相关新闻，将自动回退为仅使用价格特征的模型。")
+    st.info("暂未找到相关新闻，若选择多模态模型可能会自动回退为仅使用价格特征的模型。")
 
 st.markdown("---")
 
-# ========== 3. 训练 + 预测：优先用多模态，失败 / 数据短则回退随机森林 ==========
+# ========== 3. 训练 + 预测：根据用户选择决定模型 ==========
 result = None
 use_hybrid = False
 
-# 为多模态模型设一个“最小 K 线长度”门槛，避免频繁报“数据太短”
-MIN_SEQ_LEN_FOR_HYBRID = 120
+MIN_SEQ_LEN_FOR_HYBRID = 120  # 多模态模型的最小 K 线长度
+can_use_hybrid = (len(df) >= MIN_SEQ_LEN_FOR_HYBRID) and (len(news_list) >= 2)
 
-if len(df) >= MIN_SEQ_LEN_FOR_HYBRID and len(news_list) >= 2:
-    try:
-        with st.spinner("正在训练『价格 + 新闻』多模态模型 (GRU)..."):
-            hf = HybridForecaster()
-            hybrid_result = hf.predict_future(
-                df,
-                news_list=news_list,
-                horizon=horizon,
-            )
-            result = hybrid_result
-            use_hybrid = True
-    except Exception as e:
-        # 不让整个 app 崩掉，只给一个提示，然后回退到价格模型
-        st.error(f"多模态模型训练/预测失败，将自动回退到纯价格模型。错误信息：{e}")
-        use_hybrid = False
-else:
-    # 提示一下为什么没用多模态（可选）
-    if len(df) < MIN_SEQ_LEN_FOR_HYBRID:
-        st.info(
-            f"历史 K 线数据不足 {MIN_SEQ_LEN_FOR_HYBRID} 条，"
-            "暂不启用多模态模型，将直接使用价格模型。"
-        )
-    elif len(news_list) < 2:
-        st.info("相关新闻条数过少，暂不启用多模态模型，将直接使用价格模型。")
-
-# 如果新闻太少或多模态失败，就回退到随机森林模型
-if not use_hybrid:
+# —— 根据前端选择分支 ——
+if model_choice == "仅价格模型（随机森林）":
+    # 完全不尝试多模态，直接随机森林
     with st.spinner("正在训练随机森林模型（仅使用价格特征）..."):
         rf = StockForecaster()
         rf_result = rf.predict_future(df, horizon=horizon)
         result = rf_result
+        use_hybrid = False
+
+elif model_choice == "多模态模型（价格 + 新闻）":
+    # 用户强制选择多模态；如果条件不足就提示并回退到随机森林
+    if not can_use_hybrid:
+        if len(df) < MIN_SEQ_LEN_FOR_HYBRID:
+            st.warning(
+                f"历史 K 线数据不足 {MIN_SEQ_LEN_FOR_HYBRID} 条，"
+                "无法使用多模态模型，将自动回退到仅使用价格特征的随机森林模型。"
+            )
+        elif len(news_list) < 2:
+            st.warning(
+                "相关新闻条数过少（少于 2 条），"
+                "无法使用多模态模型，将自动回退到仅使用价格特征的随机森林模型。"
+            )
+        with st.spinner("正在训练随机森林模型（仅使用价格特征）..."):
+            rf = StockForecaster()
+            rf_result = rf.predict_future(df, horizon=horizon)
+            result = rf_result
+            use_hybrid = False
+    else:
+        # 条件满足，尝试多模态；失败则回退
+        try:
+            with st.spinner("正在训练『价格 + 新闻』多模态模型 (GRU)..."):
+                hf = HybridForecaster()
+                hybrid_result = hf.predict_future(
+                    df,
+                    news_list=news_list,
+                    horizon=horizon,
+                )
+                result = hybrid_result
+                use_hybrid = True
+        except Exception as e:
+            st.error(f"多模态模型训练/预测失败，将自动回退到纯价格模型。错误信息：{e}")
+            with st.spinner("正在训练随机森林模型（仅使用价格特征）..."):
+                rf = StockForecaster()
+                rf_result = rf.predict_future(df, horizon=horizon)
+                result = rf_result
+                use_hybrid = False
+
+else:  # "自动选择（推荐）"
+    if can_use_hybrid:
+        try:
+            with st.spinner("正在训练『价格 + 新闻』多模态模型 (GRU)..."):
+                hf = HybridForecaster()
+                hybrid_result = hf.predict_future(
+                    df,
+                    news_list=news_list,
+                    horizon=horizon,
+                )
+                result = hybrid_result
+                use_hybrid = True
+        except Exception as e:
+            st.error(f"多模态模型训练/预测失败，将自动回退到纯价格模型。错误信息：{e}")
+            with st.spinner("正在训练随机森林模型（仅使用价格特征）..."):
+                rf = StockForecaster()
+                rf_result = rf.predict_future(df, horizon=horizon)
+                result = rf_result
+                use_hybrid = False
+    else:
+        # 自动模式下，条件不够就提示原因并使用随机森林
+        if len(df) < MIN_SEQ_LEN_FOR_HYBRID:
+            st.info(
+                f"历史 K 线数据不足 {MIN_SEQ_LEN_FOR_HYBRID} 条，"
+                "自动关闭多模态模型，改用仅使用价格特征的随机森林模型。"
+            )
+        elif len(news_list) < 2:
+            st.info(
+                "相关新闻条数过少，自动关闭多模态模型，"
+                "改用仅使用价格特征的随机森林模型。"
+            )
+        with st.spinner("正在训练随机森林模型（仅使用价格特征）..."):
+            rf = StockForecaster()
+            rf_result = rf.predict_future(df, horizon=horizon)
+            result = rf_result
+            use_hybrid = False
 
 # ========== 4. 展示预测结果 ==========
 st.subheader("预测结果")
