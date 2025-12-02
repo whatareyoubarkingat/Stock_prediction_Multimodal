@@ -15,7 +15,6 @@ from stock_engine_hybrid import HybridForecaster
 
 
 # ========== 页面配置 ==========
-///st.set_page_config(page_title="Stock K-line Forecast (yfinance)", layout="wide")
 st.set_page_config(page_title="Stock K-line Forecast (yfinance)", layout="wide")
 
 
