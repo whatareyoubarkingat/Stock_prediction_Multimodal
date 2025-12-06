@@ -1,5 +1,5 @@
-# rag_engine_stock_1.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -10,16 +10,13 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 import requests
 
-# 可选导入 streamlit，用于在 Cloud 上读取 st.secrets
 try:
     import streamlit as st  # type: ignore
 except Exception:
     st = None  # type: ignore
 
 
-# ==========================
-# 数据结构：新闻
-# ==========================
+# ========== 新闻结构体 ==========
 
 @dataclass
 class NewsItem:
@@ -30,12 +27,9 @@ class NewsItem:
     source: str
 
 
-# ==========================
-# 新闻搜索（示例：NewsAPI）
-# ==========================
+# ========== NewsAPI ==========
 
 def _get_news_api_key() -> Optional[str]:
-    # 优先 st.secrets，其次环境变量
     if st is not None:
         try:
             key = st.secrets.get("NEWS_API_KEY", None)  # type: ignore
@@ -46,26 +40,17 @@ def _get_news_api_key() -> Optional[str]:
     return os.getenv("NEWS_API_KEY")
 
 
-def search_stock_news(
-    symbol: str,
-    days: int = 7,
-    max_results: int = 30,
-) -> List[NewsItem]:
-    """
-    用 NewsAPI 搜股票相关新闻（你也可以改成别的源）。
-    """
+def search_stock_news(symbol: str, days: int = 7, max_results: int = 30) -> List[NewsItem]:
     api_key = _get_news_api_key()
     if not api_key:
         return []
 
     base_url = "https://newsapi.org/v2/everything"
-    # 用 ticker + 股票 关键字做个简单 query
-    q = f"{symbol} stock OR 股票"
+    query = f"{symbol} stock OR 股票"
 
     from_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
-
     params = {
-        "q": q,
+        "q": query,
         "from": from_date,
         "language": "en",
         "sortBy": "relevancy",
@@ -77,13 +62,11 @@ def search_stock_news(
         resp = requests.get(base_url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-    except Exception as e:
-        print("[search_stock_news] failed:", repr(e))
+    except Exception:
         return []
 
-    articles = data.get("articles", [])
     out: List[NewsItem] = []
-    for art in articles:
+    for art in data.get("articles", []):
         try:
             published_at = datetime.fromisoformat(
                 art.get("publishedAt", "").replace("Z", "+00:00")
@@ -97,28 +80,17 @@ def search_stock_news(
                 description=art.get("description", "") or "",
                 published_at=published_at,
                 url=art.get("url", "") or "",
-                source=(art.get("source", {}) or {}).get("name", "") or "",
+                source=(art.get("source") or {}).get("name", "") or "",
             )
         )
-
     return out
 
 
-# ==========================
-# OHLCV -> 技术特征
-# ==========================
+# ========== OHLCV → 技术特征 ==========
 
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    输入: 包含列 [date, open, high, low, close, volume]
-    输出: 按日期排序后的特征 DataFrame，包含:
-      - date
-      - close
-      - 一系列技术指标（MA, 波动率, 成交量均线, 高频 return 等）
-    """
     data = df.copy()
 
-    # 统一列名
     rename_map = {
         "Date": "date",
         "Datetime": "date",
@@ -136,7 +108,6 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         data["date"] = pd.to_datetime(data["date"])
 
-    # 填补必需列
     for col in ["open", "high", "low", "close", "volume"]:
         if col not in data.columns:
             data[col] = np.nan
@@ -148,33 +119,35 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     data["ret_5d"] = data["close"].pct_change(5)
     data["ret_10d"] = data["close"].pct_change(10)
 
-    # 均线
+    # 均线 + 波动
     for w in [5, 10, 20, 60]:
         data[f"ma_{w}"] = data["close"].rolling(w).mean()
         data[f"std_{w}"] = data["close"].rolling(w).std()
         data[f"vol_ma_{w}"] = data["volume"].rolling(w).mean()
 
-    # 价格/均线比
     data["price_ma5_ratio"] = data["close"] / data["ma_5"]
     data["price_ma20_ratio"] = data["close"] / data["ma_20"]
-
-    # 波动率 proxy
     data["hl_range"] = (data["high"] - data["low"]) / data["close"]
 
-    # 丢掉前期 NaN
     data = data.dropna().reset_index(drop=True)
 
-    # 保留关心列
-    feature_cols = ["date", "close"] + [
-        c for c in data.columns if c not in ["open", "high", "low", "adj_close", "volume"]
-        and c not in ["ret_1d", "ret_5d", "ret_10d"]  # 你也可以保留这些 return
+    cols = ["date", "close"] + [
+        c
+        for c in data.columns
+        if c
+        not in [
+            "open",
+            "high",
+            "low",
+            "adj_close",
+            "volume",
+        ]
+        and c not in ["ret_1d", "ret_5d", "ret_10d"]
     ]
-    return data[feature_cols]
+    return data[cols]
 
 
-# ==========================
-# 简单 RF 基线预测器
-# ==========================
+# ========== RF 基线模型 ==========
 
 @dataclass
 class ForecastResult:
@@ -183,15 +156,7 @@ class ForecastResult:
 
 
 class StockForecaster:
-    """
-    只用数值特征的随机森林基线，用于对比。
-    """
-
-    def __init__(
-        self,
-        horizon: int = 5,
-        random_state: int = 42,
-    ) -> None:
+    def __init__(self, horizon: int = 5, random_state: int = 42) -> None:
         self.horizon = horizon
         self.model = RandomForestRegressor(
             n_estimators=400,
@@ -203,9 +168,7 @@ class StockForecaster:
         self.fitted = False
 
     def fit(self, hist_df: pd.DataFrame) -> float:
-        feat = make_features(hist_df)
-        feat = feat.sort_values("date").reset_index(drop=True)
-
+        feat = make_features(hist_df).sort_values("date").reset_index(drop=True)
         X = feat.drop(columns=["date", "close"]).values
         y = feat["close"].values
 
@@ -227,8 +190,8 @@ class StockForecaster:
     def forecast(self, hist_df: pd.DataFrame) -> ForecastResult:
         mape = self.fit(hist_df)
         if not self.fitted:
-            forecast_df = pd.DataFrame(columns=["date", "pred_close"], data=[])
-            return ForecastResult(forecast_df=forecast_df, test_mape=float("nan"))
+            empty = pd.DataFrame(columns=["date", "pred_close"])
+            return ForecastResult(forecast_df=empty, test_mape=float("nan"))
 
         hist_df = hist_df.sort_values("date").reset_index(drop=True)
         last_date = hist_df["date"].iloc[-1]
@@ -240,9 +203,9 @@ class StockForecaster:
         for step in range(self.horizon):
             next_date = last_date + timedelta(days=1 + step)
             feat = make_features(cur_df)
-            X_last = feat.drop(columns=["date", "close"]).values[-1:].copy()
-            pred = float(self.model.predict(X_last)[0])
+            X_last = feat.drop(columns=["date", "close"]).values[-1:]
 
+            pred = float(self.model.predict(X_last)[0])
             dates.append(next_date)
             preds.append(pred)
 
