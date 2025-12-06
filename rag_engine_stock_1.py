@@ -91,6 +91,9 @@ def search_stock_news(symbol: str, days: int = 7, max_results: int = 30) -> List
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
     data = df.copy()
 
+    if data.columns.duplicated().any():
+        data = data.loc[:, ~data.columns.duplicated()]
+
     rename_map = {
         "Date": "date",
         "Datetime": "date",
