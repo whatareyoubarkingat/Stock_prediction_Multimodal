@@ -148,6 +148,7 @@ else:
     try:
         with st.spinner("正在下载 K 线数据..."):
             df_ohlcv = load_ohlcv_from_yf(ticker, period)
+        df_ohlcv = df_ohlcv.loc[:, ~df_ohlcv.columns.duplicated()]
 
         with st.spinner("正在抓取新闻..."):
             news_list = search_stock_news(ticker, days=7, max_results=40)
