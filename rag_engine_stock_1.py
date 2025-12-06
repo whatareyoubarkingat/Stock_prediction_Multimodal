@@ -26,6 +26,30 @@ class NewsItem:
     url: str
     source: str
 
+def dedup_date_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    确保 DataFrame 里 'date' 列最多只出现一次：
+      - 如果没有 'date'，原样返回
+      - 如果有多个 'date'，只保留第一个，其余全部丢掉
+    """
+    if "date" not in df.columns:
+        return df
+
+    cols = list(df.columns)
+    keep_mask = []
+    seen_date = False
+    for c in cols:
+        if c != "date":
+            keep_mask.append(True)
+        else:
+            if not seen_date:
+                keep_mask.append(True)
+                seen_date = True
+            else:
+                # 后面的所有 'date' 都扔掉
+                keep_mask.append(False)
+
+    return df.loc[:, keep_mask]
 
 # ========== NewsAPI ==========
 
@@ -90,6 +114,8 @@ def search_stock_news(symbol: str, days: int = 7, max_results: int = 30) -> List
 
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
     data = df.copy()
+
+    data = dedup_date_column(data)
 
     if data.columns.duplicated().any():
         data = data.loc[:, ~data.columns.duplicated()]
@@ -174,6 +200,7 @@ class StockForecaster:
         self.fitted = False
 
     def fit(self, hist_df: pd.DataFrame) -> float:
+        hist_df = dedup_date_column(hist_df)
         feat = make_features(hist_df).sort_values("date").reset_index(drop=True)
         X = feat.drop(columns=["date", "close"]).values
         y = feat["close"].values
@@ -194,6 +221,7 @@ class StockForecaster:
         return mape
 
     def forecast(self, hist_df: pd.DataFrame) -> ForecastResult:
+        hist_df = dedup_date_column(hist_df)
         mape = self.fit(hist_df)
         if not self.fitted:
             empty = pd.DataFrame(columns=["date", "pred_close"])
