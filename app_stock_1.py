@@ -1,5 +1,3 @@
-# app_stock_1.py
-
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
@@ -22,39 +20,7 @@ st.set_page_config(
 st.title("📈 多模态 K 线 + 新闻 预测 Demo")
 
 
-# ==========================
-# 输入区域
-# ==========================
-
-with st.sidebar:
-    st.header("参数设置")
-
-    ticker = st.text_input("股票代码 / Ticker", value="AAPL")
-
-    period = st.selectbox(
-        "历史区间 (yfinance period)",
-        ["6mo", "1y", "2y", "5y"],
-        index=1,
-    )
-
-    horizon = st.slider("预测步数（天）", min_value=1, max_value=30, value=5)
-
-    model_type = st.selectbox(
-        "选择模型",
-        [
-            "RandomForest 数值基线",
-            "Hybrid (价格 + 新闻)",
-            "Hybrid (价格 + 新闻 + Qwen3-VL K 线图)",
-        ],
-        index=2,
-    )
-
-    run_btn = st.button("开始预测", type="primary")
-
-
-# ==========================
-# 工具函数
-# ==========================
+# ========== yfinance 下载 OHLCV ==========
 
 def load_ohlcv_from_yf(symbol: str, period: str) -> pd.DataFrame:
     data = yf.download(symbol, period=period, auto_adjust=False, progress=False)
@@ -86,7 +52,9 @@ def load_ohlcv_from_yf(symbol: str, period: str) -> pd.DataFrame:
     return df[["date", "open", "high", "low", "close", "volume"]]
 
 
-def plot_candlestick(df: pd.DataFrame, title: str = ""):
+# ========== 画 K 线 & 预测图 ==========
+
+def plot_candlestick(df: pd.DataFrame, title: str = "") -> go.Figure:
     fig = go.Figure(
         data=[
             go.Candlestick(
@@ -109,7 +77,7 @@ def plot_candlestick(df: pd.DataFrame, title: str = ""):
     return fig
 
 
-def plot_forecast(df_hist: pd.DataFrame, forecast_df: pd.DataFrame):
+def plot_forecast(df_hist: pd.DataFrame, forecast_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
     fig.add_trace(
@@ -141,9 +109,35 @@ def plot_forecast(df_hist: pd.DataFrame, forecast_df: pd.DataFrame):
     return fig
 
 
-# ==========================
-# 主流程
-# ==========================
+# ========== 侧边栏参数 ==========
+
+with st.sidebar:
+    st.header("参数设置")
+
+    ticker = st.text_input("股票代码 / Ticker", value="AAPL")
+
+    period = st.selectbox(
+        "历史区间 (yfinance period)",
+        ["6mo", "1y", "2y", "5y"],
+        index=1,
+    )
+
+    horizon = st.slider("预测步数（天）", min_value=1, max_value=30, value=5)
+
+    model_type = st.selectbox(
+        "选择模型",
+        [
+            "RandomForest 数值基线",
+            "Hybrid (价格 + 新闻)",
+            "Hybrid (价格 + 新闻 + Qwen3-VL K 线图)",
+        ],
+        index=2,
+    )
+
+    run_btn = st.button("开始预测", type="primary")
+
+
+# ========== 主流程 ==========
 
 if not run_btn:
     st.info("在左侧输入股票代码和参数，然后点击 **开始预测**。")
@@ -153,13 +147,16 @@ else:
             df_ohlcv = load_ohlcv_from_yf(ticker, period)
 
         with st.spinner("正在抓取新闻..."):
-            news_list: list[NewsItem] = search_stock_news(ticker, days=7, max_results=40)
+            news_list = search_stock_news(ticker, days=7, max_results=40)
 
         col1, col2 = st.columns([2, 1])
 
         with col1:
             st.subheader("历史 K 线")
-            st.plotly_chart(plot_candlestick(df_ohlcv, title=f"{ticker} OHLC"), use_container_width=True)
+            st.plotly_chart(
+                plot_candlestick(df_ohlcv, title=f"{ticker} OHLC"),
+                use_container_width=True,
+            )
 
         with col2:
             st.subheader("最近新闻 (NewsAPI)")
@@ -174,7 +171,7 @@ else:
 
         st.markdown("---")
 
-        # 根据模型类型选择后端
+        # 选择模型
         if model_type == "RandomForest 数值基线":
             with st.spinner("使用 RandomForest 基线进行预测..."):
                 rf = StockForecaster(horizon=horizon)
@@ -183,7 +180,6 @@ else:
             st.success(f"基线模型 MAPE (验证集) = {result.test_mape:.4f}")
             fig2 = plot_forecast(df_ohlcv, result.forecast_df)
             st.plotly_chart(fig2, use_container_width=True)
-
             forecast_df = result.forecast_df
 
         else:
@@ -197,22 +193,20 @@ else:
                 hres = hybrid.forecast(df_ohlcv, news_list)
 
             if not pd.isna(hres.test_mae):
-                st.success(f"{hres.model_info}")
+                st.success(hres.model_info)
             else:
-                st.warning("样本太少，Hybrid 模型未成功训练，结果仅供参考。")
+                st.warning("样本太少或 Hybrid 模型未成功训练，结果仅供参考。")
 
             fig2 = plot_forecast(df_ohlcv, hres.forecast_df)
             st.plotly_chart(fig2, use_container_width=True)
-
             forecast_df = hres.forecast_df
 
-        # 预测结果表 + 下载
+        # 结果表 + 下载
         st.subheader("预测结果表")
         if forecast_df.empty:
             st.write("暂无预测结果。")
         else:
             st.dataframe(forecast_df)
-
             csv_bytes = forecast_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "下载预测结果 CSV",
