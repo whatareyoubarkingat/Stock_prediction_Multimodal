@@ -15,17 +15,6 @@ try:
 except Exception:
     st = None  # type: ignore
 
-
-# ========== 新闻结构体 ==========
-
-@dataclass
-class NewsItem:
-    title: str
-    description: str
-    published_at: datetime
-    url: str
-    source: str
-
 def dedup_date_column(df: pd.DataFrame) -> pd.DataFrame:
     """
     确保 DataFrame 里 'date' 列最多只出现一次：
@@ -50,6 +39,18 @@ def dedup_date_column(df: pd.DataFrame) -> pd.DataFrame:
                 keep_mask.append(False)
 
     return df.loc[:, keep_mask]
+
+
+# ========== 新闻结构体 ==========
+
+@dataclass
+class NewsItem:
+    title: str
+    description: str
+    published_at: datetime
+    url: str
+    source: str
+
 
 # ========== NewsAPI ==========
 
