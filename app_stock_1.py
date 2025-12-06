@@ -7,6 +7,7 @@ from rag_engine_stock_1 import (
     StockForecaster,
     search_stock_news,
     NewsItem,
+    dedup_date_column,
 )
 
 from stock_engine_hybrid import HybridForecaster
@@ -43,6 +44,8 @@ def load_ohlcv_from_yf(symbol: str, period: str) -> pd.DataFrame:
         "Volume": "volume",
     }
     df = df.rename(columns=rename_map)
+
+    df = dedup_date_column(df)
 
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()]
