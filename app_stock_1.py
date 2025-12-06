@@ -44,6 +44,9 @@ def load_ohlcv_from_yf(symbol: str, period: str) -> pd.DataFrame:
     }
     df = df.rename(columns=rename_map)
 
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+
     if "date" not in df.columns:
         df.insert(0, "date", pd.to_datetime(df.iloc[:, 0]))
     else:
