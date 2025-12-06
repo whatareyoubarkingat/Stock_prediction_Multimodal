@@ -224,6 +224,7 @@ class HybridForecaster:
     def _build_panel(
         self, hist_df: pd.DataFrame, news_list: List[NewsItem]
     ) -> (pd.DataFrame, np.ndarray):
+        hist_df = dedup_date_column(hist_df)
         feat_df = make_features(hist_df)
         news_daily = self._build_daily_news_embedding(news_list)
 
