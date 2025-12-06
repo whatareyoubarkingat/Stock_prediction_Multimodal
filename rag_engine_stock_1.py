@@ -103,6 +103,9 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     }
     data = data.rename(columns=rename_map)
 
+    if data.columns.duplicated().any():
+        data = data.loc[:, ~data.columns.duplicated()]
+
     if "date" not in data.columns:
         data.insert(0, "date", pd.to_datetime(data.iloc[:, 0]))
     else:
