@@ -113,6 +113,7 @@ def search_stock_news(symbol: str, days: int = 7, max_results: int = 30) -> List
 # ========== OHLCV → 技术特征 ==========
 
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
+    print("DEBUG make_features input columns:", list(df.columns))
     data = df.copy()
 
     data = dedup_date_column(data)
