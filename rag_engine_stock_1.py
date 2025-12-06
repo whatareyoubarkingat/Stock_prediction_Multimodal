@@ -17,28 +17,18 @@ except Exception:
 
 def dedup_date_column(df: pd.DataFrame) -> pd.DataFrame:
     """
-    确保 DataFrame 里 'date' 列最多只出现一次：
-      - 如果没有 'date'，原样返回
-      - 如果有多个 'date'，只保留第一个，其余全部丢掉
+    强制保证列名唯一（尤其是 'date' 只能出现一次）：
+    - 如果没有重复列，原样返回
+    - 如果有重复列（包括 'date'），保留第一次出现的，后面的全部丢弃
     """
-    if "date" not in df.columns:
+    if df is None or df.empty:
         return df
 
-    cols = list(df.columns)
-    keep_mask = []
-    seen_date = False
-    for c in cols:
-        if c != "date":
-            keep_mask.append(True)
-        else:
-            if not seen_date:
-                keep_mask.append(True)
-                seen_date = True
-            else:
-                # 后面的所有 'date' 都扔掉
-                keep_mask.append(False)
-
-    return df.loc[:, keep_mask]
+    df = df.copy()
+    # 任何重复列名（不只 date）都只保留第一次出现的
+    mask = ~df.columns.duplicated()
+    df = df.loc[:, mask]
+    return df
 
 
 # ========== 新闻结构体 ==========
@@ -133,6 +123,8 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
         "Volume": "volume",
     }
     data = data.rename(columns=rename_map)
+
+    data = dedup_date_column(data)
 
     if data.columns.duplicated().any():
         data = data.loc[:, ~data.columns.duplicated()]
