@@ -14,11 +14,11 @@ from stock_engine_hybrid import HybridForecaster
 
 
 st.set_page_config(
-    page_title="多模态 K 线预测 Demo",
+    page_title="K 线预测",
     layout="wide",
 )
 
-st.title("📈 多模态 K 线 + 新闻 预测 Demo")
+st.title("📈 Peter 的 K 线预测小程序")
 
 
 # ========== yfinance 下载 OHLCV ==========
@@ -120,7 +120,7 @@ def plot_forecast(df_hist: pd.DataFrame, forecast_df: pd.DataFrame) -> go.Figure
 with st.sidebar:
     st.header("参数设置")
 
-    ticker = st.text_input("股票代码 / Ticker", value="AAPL")
+    ticker = st.text_input("股票代码 / Ticker", value="TSLA")
 
     period = st.selectbox(
         "历史区间 (yfinance period)",
