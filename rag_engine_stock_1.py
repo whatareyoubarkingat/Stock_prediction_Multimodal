@@ -162,6 +162,8 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
         for c in data.columns
         if c
         not in [
+            "date",
+            "close",
             "open",
             "high",
             "low",
