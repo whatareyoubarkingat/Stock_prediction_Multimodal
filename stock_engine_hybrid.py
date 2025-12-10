@@ -227,19 +227,38 @@ class HybridForecaster:
     def _build_panel(
         self, hist_df: pd.DataFrame, news_list: List[NewsItem]
     ) -> (pd.DataFrame, np.ndarray):
+        """
+        构造特征矩阵 X 和标签 y：
+          - X: 当天的数值特征 + 新闻 embedding (+ 可选 K 线因子)
+          - y: 下一天的收盘价
+        确保 len(X) == len(y)，否则会触发 RandomForest 的长度不一致错误。
+        """
+        # 1. 先整理 K 线数据（去重列）
         hist_df = dedup_date_column(hist_df)
+
+        # 2. 基于 OHLCV 生成技术指标特征（内部已经排序、dropna）
         feat_df = make_features(hist_df)
+        feat_df = feat_df.sort_values("date").reset_index(drop=True)
+
+        # 3. 新闻按日聚合 embedding，并统一为 datetime64[ns]
         news_daily = self._build_daily_news_embedding(news_list)
 
+        # 4. 按 date 左连接：每一天的技术指标 + 当天新闻 embedding
         X = feat_df.merge(news_daily, on="date", how="left")
         X = X.sort_values("date").reset_index(drop=True)
         X = X.fillna(0.0)
 
-        closes = hist_df.sort_values("date")["close"].values
+        # 5. 用 X 自己的 close 列来生成 y（而不是 hist_df），避免长度不一致
+        closes = X["close"].values
+        if len(closes) <= 1:
+            # 数据太少，返回空
+            return X.iloc[0:0, :], np.zeros(0, dtype=float)
+
+        # 用今天的特征预测“下一天”的收盘价
         y = closes[1:]
         X = X.iloc[:-1, :].reset_index(drop=True)
 
-        # 图像因子（可选）
+        # 6. 图像因子（如果开启 Qwen-VL）
         if self.use_qwen_vl and self.qwen_client and self.qwen_client.enabled:
             kline_short = []
             kline_vol = []
@@ -274,6 +293,7 @@ class HybridForecaster:
             X["kline_pattern_strength"] = 0.0
 
         return X, y
+
 
     # ----- 训练 + 验证 -----
 
