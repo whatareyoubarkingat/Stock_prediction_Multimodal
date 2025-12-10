@@ -128,7 +128,7 @@ with st.sidebar:
         index=1,
     )
 
-    horizon = st.slider("预测步数（天）", min_value=1, max_value=30, value=5)
+    horizon = st.slider("预测步数（天）", min_value=1, max_value=30, value=1)
 
     model_type = st.selectbox(
         "选择模型",
