@@ -216,7 +216,6 @@ class HybridForecaster:
         df["date"] = dates
         agg = df.groupby("date").mean().reset_index()
 
-        import pandas as pd
         agg["date"] = pd.to_datetime(agg["date"])
 
         rename_map = {i: f"news_emb_{i}" for i in range(agg.shape[1] - 1)}
