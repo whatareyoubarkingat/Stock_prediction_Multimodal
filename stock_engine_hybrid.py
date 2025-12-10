@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor
 from sentence_transformers import SentenceTransformer
 
-from rag_engine_stock_1 import NewsItem, make_features
+from rag_engine_stock_1 import NewsItem, make_features, dedup_date_column
 
 
 # ========== Qwen-VL 客户端（可选） ==========
